@@ -436,10 +436,36 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 st.caption("Coordinates and bounding boxes are derived directly from the georeferenced satellite raster grid.")
 
                 for c in rep.candidates[:10]:
-                    with st.expander(f"📌 **{c.candidate_id}**: {c.area_hectares} ha ({c.area_m2:,.0f} m²) — Centroid: `({c.centroid['latitude']}, {c.centroid['longitude']})`", expanded=False):
+                    cls_val = c.classification.value if hasattr(c.classification, "value") else str(c.classification or "UNCLEAR")
+                    badge_icons = {
+                        "CONSTRUCTION": "🏗️",
+                        "AGRICULTURAL_HARVEST": "🌾",
+                        "WATER_BODY": "💧",
+                        "CLOUD_OR_ARTIFACT": "☁️",
+                        "UNCLEAR": "❓",
+                    }
+                    icon = badge_icons.get(cls_val, "📌")
+                    conf_str = f" ({c.confidence:.0%})" if c.confidence is not None else ""
+                    expander_title = f"{icon} **{c.candidate_id}** [{cls_val}{conf_str}]: {c.area_hectares} ha ({c.area_m2:,.0f} m²) — Centroid: `({c.centroid['latitude']}, {c.centroid['longitude']})`"
+                    
+                    with st.expander(expander_title, expanded=False):
+                        if cls_val == "AGRICULTURAL_HARVEST":
+                            st.warning(f"🌾 **Classification**: `{cls_val}` — Seasonal Agricultural Harvest / Clearing")
+                            st.caption("ℹ️ Detected as spectral disturbance but identified as seasonal crop rotation/fallow field rather than infrastructure.")
+                        elif cls_val == "CONSTRUCTION":
+                            st.success(f"🏗️ **Classification**: `{cls_val}` — Infrastructure / Construction Works")
+                        else:
+                            st.info(f"{icon} **Classification**: `{cls_val}`")
+
+                        if c.confidence is not None:
+                            st.markdown(f"**Confidence**: `{c.confidence:.1%}`")
                         st.markdown(f"**Bounding Box**: `{c.bbox}`")
                         st.markdown(f"**Spectral Change**: Mean Δ NDVI: `{c.mean_delta_ndvi:+.3f}` | BSI Delta: `{c.mean_delta_bsi:+.3f}`")
-                        st.markdown(f"**Visual Assessment**: {c.gemini_interpretation}")
+                        if c.visual_evidence:
+                            st.markdown(f"**Visual Evidence**: {c.visual_evidence}")
+                        if c.limitations:
+                            st.markdown(f"**Spatial Limitations (10m resolution)**: *{c.limitations}*")
+                        st.markdown(f"**Interpretation**: {c.gemini_interpretation}")
 
                 # Download Options for Google Earth Engine / GIS
                 st.markdown("#### 📥 Export Data for Independent Verification:")

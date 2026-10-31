@@ -15,7 +15,10 @@ from agents.construction_verification.prompts import (
 )
 from PIL import Image
 from agents.construction_verification.schemas import (
+    CandidateClassification,
     ConstructionClaim,
+    DiscoveryCandidateFinding,
+    DiscoveryVisionStructuredOutput,
     DroneAnalysisOutput,
     DroneVerificationFinding,
     ExtractedProjectInfo,
@@ -312,21 +315,34 @@ Return structured findings for every claim according to the system instructions.
         except Exception as e:
             logger.warning(f"Failed measuring image size: {e}")
 
-        llm = self._get_llm()
+        llm = self._get_llm(DiscoveryVisionStructuredOutput)
         if llm is None:
             audit.api_call_status = "NOT_ATTEMPTED"
             audit.parsed_response_status = "TEST_SYNTHETIC" if settings.USE_FAKE_MODEL else "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
             audit.error_message = "No Gemini API key or USE_FAKE_MODEL=True"
-            interps = {
-                c["candidate_id"]: f"Detected substantial land-cover transformation and ground disturbance ({c['area_hectares']} ha)."
+            fallback_findings = [
+                DiscoveryCandidateFinding(
+                    candidate_id=c["candidate_id"],
+                    classification=CandidateClassification.CONSTRUCTION,
+                    confidence=0.85 if settings.USE_FAKE_MODEL else 0.5,
+                    visual_evidence=f"Detected ground disturbance and surface alteration ({c['area_hectares']} ha).",
+                    limitations=["Automated spectral detection; verification required."],
+                )
                 for c in candidates
+            ]
+            interps = {
+                f.candidate_id: f"{f.classification.value}: {f.visual_evidence}"
+                for f in fallback_findings
             }
+            summary_txt = (
+                f"Independent change detection identified {len(candidates)} candidate zones "
+                f"covering {metrics.get('total_disturbed_area_m2', 0):,.0f} m^2 based on multi-temporal spectral analysis."
+            )
             return {
-                "summary": (
-                    f"Independent change detection identified {len(candidates)} candidate construction zones "
-                    f"covering {metrics.get('total_disturbed_area_m2', 0):,.0f} m^2 based on multi-temporal spectral analysis."
-                ),
+                "summary": summary_txt,
+                "executive_summary": summary_txt,
+                "findings": fallback_findings,
                 "candidate_interpretations": interps,
                 "audit": audit,
             }
@@ -336,7 +352,8 @@ Return structured findings for every claim according to the system instructions.
         for c in candidates[:8]:
             cand_descriptions.append(
                 f"- {c['candidate_id']}: Centroid ({c['centroid']['latitude']}, {c['centroid']['longitude']}), "
-                f"Area: {c['area_hectares']} ha ({c['area_m2']:,.0f} m^2), Delta NDVI: {c.get('mean_delta_ndvi', 'N/A')}"
+                f"Area: {c['area_hectares']} ha ({c['area_m2']:,.0f} m^2), Delta NDVI: {c.get('mean_delta_ndvi', 'N/A')}, "
+                f"Delta BSI: {c.get('mean_delta_bsi', 'N/A')}"
             )
         cand_text = "\n".join(cand_descriptions) if cand_descriptions else "No large candidate clusters identified."
 
@@ -353,14 +370,17 @@ OBSERVED CHANGE METRICS:
 GEOGRAPHIC CANDIDATE CHANGE ZONES (Coordinates derived from raster):
 {cand_text}
 
-INSTRUCTIONS:
-1. Identify visible land clearing and earthworks extent.
-2. Identify new large paved linear surfaces, roads, runways, taxiways, or aprons.
-3. Identify new large structures, terminal facilities, hangars, or industrial buildings.
-4. For each listed candidate ID (e.g. CANDIDATE-01, CANDIDATE-02), provide a specific visual observation based on what is visible in Image 2 compared to Image 1.
-5. Provide a concise executive summary of new construction visible between the two dates.
+CLASSIFICATION TAXONOMY:
+- CONSTRUCTION: Linear paved surfaces, earthworks, foundations, building construction, runways, roads.
+- AGRICULTURAL_HARVEST: Crop harvesting, seasonal drying, fallow field clearing, plowing patterns.
+- WATER_BODY: Reservoir filling/drying, flood inundation, retention pond expansion.
+- CLOUD_OR_ARTIFACT: Unmasked cloud edges, haze, sensor striping or terrain shadows.
+- UNCLEAR: Ambiguous visual change at 10m Sentinel-2 resolution.
 
-Be factual, objective, and describe actual visual pixel differences. Do not invent coordinates."""
+INSTRUCTIONS:
+1. For each listed candidate ID (e.g. CANDIDATE-01, CANDIDATE-02), output a DiscoveryCandidateFinding with exact matching candidate_id, classification, confidence (0.0 to 1.0), visual_evidence, and limitations.
+2. Provide an overall_summary summarizing all observed physical developments.
+Be factual, objective, and describe actual visual pixel differences. Do not invent candidate IDs."""
 
         content: list[dict[str, Any]] = [
             {"type": "text", "text": prompt},
@@ -375,31 +395,56 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
         ]
 
         messages = [
-            SystemMessage(content="You are an expert geospatial remote sensing analyst. Analyze real satellite image pairs objectively."),
+            SystemMessage(content="You are an expert geospatial remote sensing analyst. Analyze real satellite image pairs objectively using structured output."),
             HumanMessage(content=content),
         ]
 
         try:
             resp = llm.invoke(messages)
-            text_resp = resp.content if hasattr(resp, "content") else str(resp)
+            if isinstance(resp, DiscoveryVisionStructuredOutput):
+                structured = resp
+            elif isinstance(resp, dict):
+                structured = DiscoveryVisionStructuredOutput(**resp)
+            else:
+                structured = DiscoveryVisionStructuredOutput(candidate_findings=[], overall_summary=str(resp))
+
             audit.api_call_status = "SUCCESS"
             audit.parsed_response_status = "SUCCESS"
             audit.vision_actually_executed = True
 
-            # Parse candidate specific notes if found in response text
-            cand_interps = {}
+            # Validate returned candidate IDs against input candidates
+            valid_ids = {c["candidate_id"] for c in candidates}
+            validated_findings: list[DiscoveryCandidateFinding] = []
+            for f in structured.candidate_findings:
+                if f.candidate_id in valid_ids:
+                    validated_findings.append(f)
+                else:
+                    logger.warning(f"Discarding hallucinated/unknown candidate ID from model: {f.candidate_id}")
+
+            # Ensure any candidate not returned gets an explicit UNCLEAR entry
+            returned_ids = {f.candidate_id for f in validated_findings}
             for c in candidates:
                 c_id = c["candidate_id"]
-                # Try to extract section for this candidate if present
-                pattern = rf"{c_id}[:\s\-]+([^\n\r]+(?:\n[^\n\r]+)?)"
-                match = re.search(pattern, text_resp, re.IGNORECASE)
-                if match:
-                    cand_interps[c_id] = match.group(1).strip()
-                else:
-                    cand_interps[c_id] = f"Observable surface alteration ({c['area_hectares']} ha) verified in satellite comparison."
+                if c_id not in returned_ids:
+                    validated_findings.append(
+                        DiscoveryCandidateFinding(
+                            candidate_id=c_id,
+                            classification=CandidateClassification.UNCLEAR,
+                            confidence=0.5,
+                            visual_evidence=f"Candidate area ({c['area_hectares']} ha) not uniquely resolved in structured findings.",
+                            limitations="Resolution or model coverage limitation.",
+                        )
+                    )
+
+            cand_interps = {
+                f.candidate_id: f"{f.classification.value}: {f.visual_evidence}"
+                for f in validated_findings
+            }
 
             return {
-                "summary": text_resp,
+                "summary": structured.overall_summary,
+                "overall_summary": structured.overall_summary,
+                "findings": validated_findings,
                 "candidate_interpretations": cand_interps,
                 "audit": audit,
             }
@@ -412,6 +457,8 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             audit.vision_actually_executed = False
             return {
                 "summary": f"VISION_NOT_EXECUTED: {err_msg}",
+                "executive_summary": f"VISION_NOT_EXECUTED: {err_msg}",
+                "findings": [],
                 "candidate_interpretations": {},
                 "audit": audit,
             }

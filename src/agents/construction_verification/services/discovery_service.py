@@ -163,12 +163,29 @@ class ConstructionDiscoveryService:
         vision_summary = vision_res["summary"]
         vision_audit = vision_res["audit"]
         candidate_interpretations = vision_res.get("candidate_interpretations", {})
+        vision_findings = vision_res.get("findings", [])
+        findings_map = {
+            (f.candidate_id if hasattr(f, "candidate_id") else f.get("candidate_id")): f
+            for f in vision_findings
+        }
 
         # Integrate Gemini interpretations into candidate objects
         candidate_objects: list[DiscoveryCandidate] = []
         for c in candidates:
             c_id = c["candidate_id"]
             interp = candidate_interpretations.get(c_id, f"Candidate surface disturbance with {c['area_hectares']} ha extent.")
+            finding = findings_map.get(c_id)
+            classification = None
+            conf = None
+            vis_evidence = None
+            limitations = ""
+            if finding:
+                classification = finding.classification if hasattr(finding, "classification") else finding.get("classification")
+                conf = finding.confidence if hasattr(finding, "confidence") else finding.get("confidence")
+                vis_evidence = finding.visual_evidence if hasattr(finding, "visual_evidence") else finding.get("visual_evidence")
+                lim_raw = finding.limitations if hasattr(finding, "limitations") else finding.get("limitations")
+                limitations = "; ".join(lim_raw) if isinstance(lim_raw, list) else (str(lim_raw) if lim_raw else "")
+
             candidate_objects.append(
                 DiscoveryCandidate(
                     candidate_id=c_id,
@@ -181,7 +198,10 @@ class ConstructionDiscoveryService:
                     change_type=c.get("change_type", "Surface Disturbance / Construction Candidate"),
                     geometry=c["geometry"],
                     gemini_interpretation=interp,
-                    confidence=c.get("confidence"),
+                    classification=classification,
+                    confidence=conf,
+                    visual_evidence=vis_evidence,
+                    limitations=limitations,
                 )
             )
 
@@ -201,6 +221,10 @@ class ConstructionDiscoveryService:
                     "mean_delta_ndvi": c.mean_delta_ndvi,
                     "mean_delta_bsi": c.mean_delta_bsi,
                     "change_type": c.change_type,
+                    "classification": str(c.classification) if c.classification else None,
+                    "confidence": c.confidence,
+                    "visual_evidence": c.visual_evidence,
+                    "limitations": c.limitations,
                     "gemini_interpretation": c.gemini_interpretation,
                     "provenance_before_scene": before_scene["scene_id"],
                     "provenance_after_scene": after_scene["scene_id"],

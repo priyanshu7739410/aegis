@@ -213,6 +213,27 @@ class VisionExecutionAudit(BaseModel):
     execution_timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+class CandidateClassification(StrEnum):
+    CONSTRUCTION = "CONSTRUCTION"
+    AGRICULTURAL_HARVEST = "AGRICULTURAL_HARVEST"
+    WATER_BODY = "WATER_BODY"
+    CLOUD_OR_ARTIFACT = "CLOUD_OR_ARTIFACT"
+    UNCLEAR = "UNCLEAR"
+
+
+class DiscoveryCandidateFinding(BaseModel):
+    candidate_id: str
+    classification: CandidateClassification
+    confidence: float = Field(ge=0.0, le=1.0)
+    visual_evidence: str
+    limitations: str = ""
+
+
+class DiscoveryVisionStructuredOutput(BaseModel):
+    overall_summary: str = Field(description="Summary of overall physical developments across the area")
+    candidate_findings: list[DiscoveryCandidateFinding] = Field(default_factory=list)
+
+
 class DiscoveryCandidate(BaseModel):
     """Georeferenced candidate area with identified land-cover or construction change."""
     candidate_id: str
@@ -224,8 +245,11 @@ class DiscoveryCandidate(BaseModel):
     mean_delta_bsi: float
     change_type: str = "Surface Disturbance / Construction Candidate"
     geometry: dict[str, Any] = Field(description="GeoJSON geometry dictionary in EPSG:4326")
-    gemini_interpretation: str | None = None
+    classification: CandidateClassification | None = None
     confidence: float | None = Field(default=None, description="Confidence score if computed or evaluated by model")
+    visual_evidence: str | None = None
+    limitations: str | None = None
+    gemini_interpretation: str | None = None
 
 
 class DiscoveryReport(BaseModel):

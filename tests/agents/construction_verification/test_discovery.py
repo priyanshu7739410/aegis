@@ -7,8 +7,11 @@ from PIL import Image
 import rasterio
 
 from agents.construction_verification.schemas import (
+    CandidateClassification,
     DiscoveryCandidate,
+    DiscoveryCandidateFinding,
     DiscoveryReport,
+    DiscoveryVisionStructuredOutput,
     VisionExecutionAudit,
 )
 from agents.construction_verification.services.discovery_service import (
@@ -284,4 +287,176 @@ def test_real_bsi_calculation_with_known_arrays(tmp_path):
     # Check that candidate delta BSI matches calculated value around 0.84, NOT 0.18
     assert abs(cand["mean_delta_bsi"] - 0.84) < 0.05
     assert cand["mean_delta_bsi"] != 0.18
+
+
+def test_discovery_structured_output_valid_case(tmp_path):
+    """Task 3: Test structured output with valid classifications (CONSTRUCTION and AGRICULTURAL_HARVEST)."""
+    client = GeminiVerificationClient(api_key="mock_key")
+    im1 = tmp_path / "b.png"
+    im2 = tmp_path / "a.png"
+    Image.new("RGB", (32, 32), "black").save(im1)
+    Image.new("RGB", (32, 32), "white").save(im2)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = DiscoveryVisionStructuredOutput(
+        overall_summary="Clear infrastructure earthworks alongside seasonal crop harvesting.",
+        candidate_findings=[
+            DiscoveryCandidateFinding(
+                candidate_id="CANDIDATE-01",
+                classification=CandidateClassification.CONSTRUCTION,
+                confidence=0.92,
+                visual_evidence="Linear paving and foundation footing excavations visible.",
+                limitations="Sub-10m trench details unresolved.",
+            ),
+            DiscoveryCandidateFinding(
+                candidate_id="CANDIDATE-02",
+                classification=CandidateClassification.AGRICULTURAL_HARVEST,
+                confidence=0.85,
+                visual_evidence="Rectangular agricultural plot clearing with regular boundaries.",
+                limitations="Could be initial perimeter grading.",
+            ),
+        ],
+    )
+
+    with patch.object(client, "_get_llm", return_value=mock_llm):
+        res = client.analyze_discovery_imagery(
+            rgb_before_path=str(im1),
+            rgb_after_path=str(im2),
+            candidates=[
+                {"candidate_id": "CANDIDATE-01", "centroid": {"latitude": 28.17, "longitude": 77.61}, "area_hectares": 10.0, "area_m2": 100000.0},
+                {"candidate_id": "CANDIDATE-02", "centroid": {"latitude": 28.18, "longitude": 77.62}, "area_hectares": 5.0, "area_m2": 50000.0},
+            ],
+            metrics={"total_disturbed_area_m2": 150000.0, "delta_ndvi_mean": -0.2},
+            scene_metadata={"before_scene_id": "S2_B", "after_scene_id": "S2_A", "area_name": "Test Area"},
+        )
+
+    findings = res["findings"]
+    assert len(findings) == 2
+    f1 = next(f for f in findings if f.candidate_id == "CANDIDATE-01")
+    f2 = next(f for f in findings if f.candidate_id == "CANDIDATE-02")
+    assert f1.classification == CandidateClassification.CONSTRUCTION
+    assert f1.confidence == 0.92
+    assert "Linear paving" in f1.visual_evidence
+    assert f2.classification == CandidateClassification.AGRICULTURAL_HARVEST
+    assert f2.confidence == 0.85
+    assert "Rectangular agricultural" in f2.visual_evidence
+    assert res["audit"].vision_actually_executed is True
+
+
+def test_discovery_structured_output_hallucinated_candidate_id_discarded(tmp_path):
+    """Task 3: Test that hallucinated or non-existent candidate IDs returned by Gemini are discarded."""
+    client = GeminiVerificationClient(api_key="mock_key")
+    im1 = tmp_path / "b.png"
+    im2 = tmp_path / "a.png"
+    Image.new("RGB", (32, 32), "black").save(im1)
+    Image.new("RGB", (32, 32), "white").save(im2)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = DiscoveryVisionStructuredOutput(
+        overall_summary="Summary with a hallucinated candidate ID.",
+        candidate_findings=[
+            DiscoveryCandidateFinding(
+                candidate_id="CANDIDATE-01",
+                classification=CandidateClassification.CONSTRUCTION,
+                confidence=0.90,
+                visual_evidence="Valid road grading.",
+                limitations="None",
+            ),
+            DiscoveryCandidateFinding(
+                candidate_id="CANDIDATE-FAKE-999",  # Hallucinated ID
+                classification=CandidateClassification.WATER_BODY,
+                confidence=0.99,
+                visual_evidence="Hallucinated lake.",
+                limitations="None",
+            ),
+        ],
+    )
+
+    with patch.object(client, "_get_llm", return_value=mock_llm):
+        res = client.analyze_discovery_imagery(
+            rgb_before_path=str(im1),
+            rgb_after_path=str(im2),
+            candidates=[
+                {"candidate_id": "CANDIDATE-01", "centroid": {"latitude": 28.17, "longitude": 77.61}, "area_hectares": 10.0, "area_m2": 100000.0},
+            ],
+            metrics={"total_disturbed_area_m2": 100000.0, "delta_ndvi_mean": -0.2},
+            scene_metadata={"before_scene_id": "S2_B", "after_scene_id": "S2_A", "area_name": "Test Area"},
+        )
+
+    findings = res["findings"]
+    candidate_ids = [f.candidate_id for f in findings]
+    assert "CANDIDATE-01" in candidate_ids
+    assert "CANDIDATE-FAKE-999" not in candidate_ids
+    assert len(findings) == 1
+
+
+def test_discovery_structured_output_missing_candidate_marked_unclear(tmp_path):
+    """Task 3: Test that candidates not returned by model are marked UNCLEAR with confidence 0.5."""
+    client = GeminiVerificationClient(api_key="mock_key")
+    im1 = tmp_path / "b.png"
+    im2 = tmp_path / "a.png"
+    Image.new("RGB", (32, 32), "black").save(im1)
+    Image.new("RGB", (32, 32), "white").save(im2)
+
+    mock_llm = MagicMock()
+    # Model only returns CANDIDATE-01, leaving out CANDIDATE-02
+    mock_llm.invoke.return_value = DiscoveryVisionStructuredOutput(
+        overall_summary="Model missed the second candidate.",
+        candidate_findings=[
+            DiscoveryCandidateFinding(
+                candidate_id="CANDIDATE-01",
+                classification=CandidateClassification.CONSTRUCTION,
+                confidence=0.88,
+                visual_evidence="Runway foundation.",
+                limitations="Low contrast.",
+            ),
+        ],
+    )
+
+    with patch.object(client, "_get_llm", return_value=mock_llm):
+        res = client.analyze_discovery_imagery(
+            rgb_before_path=str(im1),
+            rgb_after_path=str(im2),
+            candidates=[
+                {"candidate_id": "CANDIDATE-01", "centroid": {"latitude": 28.17, "longitude": 77.61}, "area_hectares": 10.0, "area_m2": 100000.0},
+                {"candidate_id": "CANDIDATE-02", "centroid": {"latitude": 28.18, "longitude": 77.62}, "area_hectares": 4.0, "area_m2": 40000.0},
+            ],
+            metrics={"total_disturbed_area_m2": 140000.0, "delta_ndvi_mean": -0.2},
+            scene_metadata={"before_scene_id": "S2_B", "after_scene_id": "S2_A", "area_name": "Test Area"},
+        )
+
+    findings = res["findings"]
+    assert len(findings) == 2
+    f2 = next(f for f in findings if f.candidate_id == "CANDIDATE-02")
+    assert f2.classification == CandidateClassification.UNCLEAR
+    assert f2.confidence == 0.5
+
+
+def test_discovery_structured_output_api_exception(tmp_path):
+    """Task 3: Test that API exceptions return VISION_NOT_EXECUTED and vision_actually_executed=False."""
+    client = GeminiVerificationClient(api_key="mock_key")
+    im1 = tmp_path / "b.png"
+    im2 = tmp_path / "a.png"
+    Image.new("RGB", (32, 32), "black").save(im1)
+    Image.new("RGB", (32, 32), "white").save(im2)
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.side_effect = RuntimeError("Quota exhausted")
+
+    with patch.object(client, "_get_llm", return_value=mock_llm):
+        res = client.analyze_discovery_imagery(
+            rgb_before_path=str(im1),
+            rgb_after_path=str(im2),
+            candidates=[
+                {"candidate_id": "CANDIDATE-01", "centroid": {"latitude": 28.17, "longitude": 77.61}, "area_hectares": 10.0, "area_m2": 100000.0},
+            ],
+            metrics={"total_disturbed_area_m2": 100000.0, "delta_ndvi_mean": -0.2},
+            scene_metadata={"before_scene_id": "S2_B", "after_scene_id": "S2_A", "area_name": "Test Area"},
+        )
+
+    assert "VISION_NOT_EXECUTED" in res["summary"]
+    assert res["audit"].vision_actually_executed is False
+    assert res["audit"].parsed_response_status == "VISION_NOT_EXECUTED"
+    assert res["findings"] == []
+
 
