@@ -382,6 +382,19 @@ class ConstructionDiscoveryService:
             else "2-scene analysis: cannot distinguish permanent construction from seasonal crop cycles without a confirmation scene. Use caution with agricultural areas."
         )
 
+        construction_ha = round(
+            sum(c.area_hectares for c in candidate_objects if c.classification == CandidateClassification.CONSTRUCTION),
+            2,
+        )
+        agricultural_ha = round(
+            sum(c.area_hectares for c in candidate_objects if c.classification == CandidateClassification.AGRICULTURAL_HARVEST),
+            2,
+        )
+        other_ha = round(
+            sum(c.area_hectares for c in candidate_objects if c.classification not in (CandidateClassification.CONSTRUCTION, CandidateClassification.AGRICULTURAL_HARVEST)),
+            2,
+        )
+
         report = DiscoveryReport(
             discovery_id=disc_id,
             area_name=area_name,
@@ -402,8 +415,13 @@ class ConstructionDiscoveryService:
             resolution_m=10.0,
             total_disturbed_area_m2=total_disturbed_area_m2,
             total_disturbed_area_hectares=round(total_disturbed_area_m2 / 10000.0, 2),
+            detected_change_area_m2=total_disturbed_area_m2,
+            detected_change_area_hectares=round(total_disturbed_area_m2 / 10000.0, 2),
             raw_change_area_m2=total_disturbed_area_m2,
             raw_change_area_hectares=round(total_disturbed_area_m2 / 10000.0, 2),
+            classified_construction_area_hectares=construction_ha,
+            classified_agricultural_area_hectares=agricultural_ha,
+            classified_other_area_hectares=other_ha,
             persistent_change_area_m2=detection_result.get("persistent_change_area_m2"),
             persistent_change_area_hectares=(
                 round(detection_result["persistent_change_area_m2"] / 10000.0, 2)

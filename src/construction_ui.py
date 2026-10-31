@@ -426,6 +426,17 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 km3.metric("Candidate Zones", f"{rep.candidates_count} clusters", ">= min mapping area")
                 km4.metric("Native Resolution", f"{rep.resolution_m:.0f} m/pixel", "Sentinel-2 L2A")
 
+                # Honest Area Breakdown for Auditors
+                st.markdown("##### 📐 Surface Area Breakdown & Classification:")
+                b_c1, b_c2, b_c3, b_c4 = st.columns(4)
+                b_c1.info(f"**Raw Spectral Change**\n\n**{rep.raw_change_area_hectares:,.1f} ha**\n\n`{rep.raw_change_area_m2:,.0f} m²`")
+                b_c2.success(f"**Classified Construction**\n\n**{rep.classified_construction_area_hectares:,.1f} ha**\n\nIdentified works")
+                b_c3.warning(f"**Agricultural / Other**\n\n**{rep.classified_agricultural_area_hectares + rep.classified_other_area_hectares:,.1f} ha**\n\nSeasonal/unclear")
+                if rep.persistent_change_area_hectares is not None:
+                    b_c4.success(f"**Persistent Change**\n\n**{rep.persistent_change_area_hectares:,.1f} ha**\n\nConfirmed multi-temporal")
+                else:
+                    b_c4.caption("**Persistent Change**\n\n*Requires 3rd confirmation date*")
+
                 # Seasonality Advisory Banner
                 if rep.seasonality_note:
                     if "2-scene analysis" in rep.seasonality_note:

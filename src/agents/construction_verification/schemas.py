@@ -270,8 +270,13 @@ class DiscoveryReport(BaseModel):
     resolution_m: float
     total_disturbed_area_m2: float
     total_disturbed_area_hectares: float
+    detected_change_area_m2: float = 0.0
+    detected_change_area_hectares: float = 0.0
     raw_change_area_m2: float = 0.0
     raw_change_area_hectares: float = 0.0
+    classified_construction_area_hectares: float = 0.0
+    classified_agricultural_area_hectares: float = 0.0
+    classified_other_area_hectares: float = 0.0
     persistent_change_area_m2: float | None = None
     persistent_change_area_hectares: float | None = None
     seasonal_vegetation_area_m2: float | None = None
