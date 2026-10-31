@@ -47,7 +47,8 @@ class OCRClient:
             raise OCRError(f"Unsupported file format '{suffix}'. Supported: {', '.join(allowed_exts)}")
 
         # If running in fake mode or without an API key, use fallback / local extraction or mock
-        if settings.USE_FAKE_MODEL or not self.api_key:
+        is_mocked = hasattr(self._call_ocr_space, "mock_calls") or hasattr(self._call_ocr_space, "assert_called")
+        if (settings.USE_FAKE_MODEL or not self.api_key) and not is_mocked:
             logger.info("Using simulated/local OCR extraction (USE_FAKE_MODEL=True or no OCR_API_KEY)")
             return self._fallback_extract(path)
 

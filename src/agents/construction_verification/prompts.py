@@ -5,7 +5,14 @@ Extraction Rules:
 1. Extract project title, construction type (e.g., Road construction, Building construction, Bridge, Foundation, Clearing).
 2. Extract the physical location or coordinates if explicitly present. Never invent or hallucinate coordinates or addresses.
 3. Extract stated start date and completion/progress claim date. If dates are not explicitly present, leave them null.
-4. Extract every claimed completed activity as an individual claim with its claimed status and any measurable quantities.
+4. CLAIMS STRICTNESS:
+   - ONLY physical construction activities qualify as claims (e.g., earthwork, excavation, road construction, bituminous paving, culvert installation, concrete pouring, drainage improvement, embankment, structural erection, foundation piling, vegetation clearing).
+   - Each claim must include its claimed completion status and any measurable quantity when stated.
+   - NON-CONSTRUCTION ITEMS MUST NEVER BE ADDED TO CLAIMS:
+     - Date periods or billing windows (e.g., 'Period 01 January 2022 - 31 August 2024')
+     - Billing or invoice categories (e.g., 'Transportation and logistics bills', 'labor supply charges', 'equipment rental')
+     - Contract terms, contractor tax IDs, bank details, or boilerplate text
+     - Put all such non-construction items into 'document_notes', NOT into 'claims'.
 5. Identify any missing critical fields required for satellite verification (specifically: site coordinates / geographic location, project dates, specific claims).
 6. List uncertain or ambiguous fields.
 7. Return strictly valid structured data matching the requested schema.

@@ -106,9 +106,14 @@ extend-select = ["I", "U"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: mark test as calling live external APIs over the network",
+    "docker: mark test as requiring docker containers",
+]
 
 [tool.pytest_env]
 OPENAI_API_KEY = "sk-fake-openai-key"
+USE_FAKE_MODEL = "true"
 
 [tool.pymarkdown]
 # Docs use long, unwrapped prose lines rather than hard-wrapping at a fixed

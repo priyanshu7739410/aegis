@@ -207,6 +207,7 @@ def synthesize_recommended_action() -> dict[str, Any]:
     supported_count = sum(1 for r in results if r.get("status") == VerificationStatus.SUPPORTED.value)
     insufficient_count = sum(1 for r in results if r.get("status") == VerificationStatus.INSUFFICIENT_EVIDENCE.value)
     not_supported_count = sum(1 for r in results if r.get("status") == VerificationStatus.NOT_SUPPORTED.value)
+    not_analyzed_count = sum(1 for r in results if r.get("status") in (VerificationStatus.NOT_ANALYZED.value, VerificationStatus.VISION_NOT_EXECUTED.value))
 
     if not_supported_count > 0:
         return {
@@ -221,6 +222,21 @@ def synthesize_recommended_action() -> dict[str, Any]:
             "default_notes": (
                 f"REJECTION RECOMMENDED: Observed satellite imagery contradicts {not_supported_count} milestone claim(s). "
                 "Full contract audit required prior to any funds disbursement."
+            ),
+        }
+    elif not_analyzed_count > 0:
+        return {
+            "action": OfficerDecisionType.HOLD.value,
+            "badge_color": "yellow",
+            "title": "HOLD / NOT ANALYZED (VISION NOT EXECUTED)",
+            "summary": (
+                f"Multimodal vision could not execute for {not_analyzed_count} claim(s) "
+                "(due to API rate limit/quota or missing imagery). "
+                "Claims remain unanalyzed. Re-run verification or perform physical engineering inspection."
+            ),
+            "default_notes": (
+                f"HOLD FOR INSPECTION: {not_analyzed_count} claim(s) were NOT ANALYZED because vision analysis did not run. "
+                "Do not disburse funds on unanalyzed claims."
             ),
         }
     elif insufficient_count > 0:
@@ -500,17 +516,16 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 # Proof of Real Vision Execution Audit Banner
                 if audit.vision_actually_executed:
                     st.success(
-                        f"🟢 **Multimodal Vision Verified**: Gemini model `{audit.gemini_model_id}` processed real pixel data.\n\n"
+                        f"🟢 **Multimodal Vision Verified**: Model `{audit.model_used or audit.gemini_model_id}` processed real pixel data.\n\n"
                         f"- Image Dimensions: `{audit.rgb_image_dimensions}` | Total Image Bytes: `{sum(audit.image_byte_lengths):,} bytes`\n"
                         f"- Both Images Included: `True` | API Status: `{audit.api_call_status}`"
                     )
                 elif audit.parsed_response_status == "QUOTA_EXHAUSTED" or (audit.error_message and ("429" in audit.error_message or "quota" in audit.error_message.lower())):
                     st.error(
                         "⛔ **Gemini API Rate Limit / Quota Exhausted (HTTP 429)**\n\n"
-                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after exponential backoff retries. "
-                        "This occurs when using a free-tier API key (limited to 20 requests/day for `gemini-2.5-flash`).\n\n"
-                        "**Impact**: All deterministic geospatial processing (Sentinel-2 STAC retrieval, NDVI/BSI change detection, polygon clustering, and surface area calculation) succeeded with 100% mathematical fidelity. Only the multimodal semantic labeling step was prevented by upstream quota.\n\n"
-                        "**Resolution**: Add a paid Google AI Studio API key to `.env` or wait for the quota window to reset."
+                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after backoff retries.\n\n"
+                        "**Impact**: Deterministic geospatial processing (Sentinel-2 STAC retrieval, NDVI/BSI change detection, polygon clustering, and surface area calculation) completed. The multimodal semantic labeling step was prevented by upstream rate limits.\n\n"
+                        "**Resolution**: Check API quota or wait for the rate limit window to reset."
                     )
                 else:
                     st.warning(f"⚠️ Vision status: `{audit.parsed_response_status}` — {audit.error_message or 'No image bytes analyzed'}")
@@ -681,8 +696,9 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                                         st.session_state.cv_completion_date = info.completion_date
                                     if info.claims:
                                         st.session_state.cv_claims = [c.model_dump() for c in info.claims]
-                                except Exception:
-                                    pass
+                                except Exception as e_extract:
+                                    logger.warning(f"Structured extraction notice: {e_extract}")
+                                    st.warning(f"⚠️ Model parsing notice: {e_extract}. Used rule-based fallback parser.")
                             st.success(f"✅ OCR extraction successful ({len(extracted)} characters)!")
                             st.rerun()
                         else:
@@ -841,9 +857,13 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                             )
 
                             results = []
+                            vision_exec = getattr(vision_out.vision_audit, "vision_actually_executed", False)
                             for c in st.session_state.cv_claims:
                                 finding = next((f for f in vision_out.findings if f.claim == c.get("activity")), None)
-                                if finding and finding.supports_claim is True:
+                                if not vision_exec:
+                                    st_val = VerificationStatus.NOT_ANALYZED.value
+                                    action = "Vision analysis not executed (quota, missing imagery, or API failure). Physical inspection or re-run required."
+                                elif finding and finding.supports_claim is True:
                                     st_val = VerificationStatus.SUPPORTED.value
                                     action = "Observable changes support claim. Officer review recommended."
                                 elif finding and finding.supports_claim is False:
@@ -851,7 +871,7 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                                     action = "Contradictory evidence. Demand explanation or reject."
                                 else:
                                     st_val = VerificationStatus.INSUFFICIENT_EVIDENCE.value
-                                    action = "Request high-resolution drone imagery or on-site physical inspection."
+                                    action = "Satellite imagery examined but inconclusive due to resolution limits. Request high-resolution drone imagery or on-site physical inspection."
 
                                 results.append({
                                     "claim": c.get("activity"),
@@ -873,13 +893,13 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 if has_quota_err:
                     st.error(
                         "⛔ **Gemini API Rate Limit / Quota Exhausted (HTTP 429)**\n\n"
-                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after exponential backoff retries. "
-                        "Please configure a paid API key in `.env` or wait for the quota window to reset."
+                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after backoff retries. "
+                        "Please configure an active API key in `.env` or wait for the quota window to reset."
                     )
                 st.markdown("#### Verification Findings:")
                 for res in st.session_state.cv_verification_results:
                     status = res["status"]
-                    icon = "✅" if status == "SUPPORTED" else "❌" if status == "NOT_SUPPORTED" else "⚠️"
+                    icon = "✅" if status == "SUPPORTED" else "❌" if status == "NOT_SUPPORTED" else "🟡" if status in ("NOT_ANALYZED", "VISION_NOT_EXECUTED") else "⚠️"
                     with st.expander(f"{icon} **{res['claim']}** — `{status}`", expanded=True):
                         st.markdown(f"**Status**: `{status}`")
                         st.markdown(f"**Gemini Reasoning**: {res['reason']}")
@@ -897,6 +917,8 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 rec = synthesize_recommended_action()
                 if rec["badge_color"] == "green":
                     st.success(f"🎯 **AI SUGGESTED ACTION**: `{rec['title']}`\n\n{rec['summary']}")
+                elif rec["badge_color"] == "yellow":
+                    st.warning(f"🎯 **AI SUGGESTED ACTION**: `{rec['title']}`\n\n{rec['summary']}")
                 elif rec["badge_color"] == "orange":
                     st.warning(f"🎯 **AI SUGGESTED ACTION**: `{rec['title']}`\n\n{rec['summary']}")
                 else:

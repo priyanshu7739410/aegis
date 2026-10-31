@@ -30,7 +30,8 @@ def test_check_str_is_http():
 
 
 def test_settings_default_values():
-    settings = Settings(_env_file=None)
+    with patch.dict(os.environ, {"USE_FAKE_MODEL": "false"}):
+        settings = Settings(_env_file=None)
     assert settings.HOST == "0.0.0.0"
     assert settings.PORT == 8080
     assert settings.USE_AWS_BEDROCK is False

@@ -65,7 +65,7 @@ Independent satellite change detection and construction discovery benchmark exec
 
 - **Vision Audit Status**: `FAILED`
 - **Parsed Response Status**: `QUOTA_EXHAUSTED`
-- **Gemini Model ID**: `gemini-2.5-flash`
+- **Gemini Model ID**: `gemini-3.8-flash` (configured via `GEMINI_MODEL`; `gemini-2.5-flash` retired/404)
 - **Vision Actually Executed**: `False`
 - **Image Byte Lengths**: `[2222244, 2103128]`
 - **Audit Timestamp**: `2026-10-31T12:20:22.820182+00:00`

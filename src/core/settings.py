@@ -106,7 +106,8 @@ class Settings(BaseSettings):
     # Construction Verification Configuration
     OCR_API_KEY: SecretStr | None = None
     GEMINI_API_KEY: SecretStr | None = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_FALLBACK_MODEL: str = "gemini-2.5-pro"
     EARTH_SEARCH_URL: str = "https://earth-search.aws.element84.com/v1"
     EARTH_SEARCH_COLLECTION: str = "sentinel-2-l2a"
     MAX_CLOUD_COVER: float = 30.0

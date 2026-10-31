@@ -28,13 +28,13 @@ async def drone_eval_node(
         logger.info("No drone/site inspection images uploaded for re-evaluation.")
         return {}
 
-    # Identify claims that were previously INSUFFICIENT_EVIDENCE
-    insufficient_claims = [
+    # Identify claims that were previously INSUFFICIENT_EVIDENCE or NOT_ANALYZED
+    unresolved_claims = [
         c for c in claims
-        if any(r["claim"] == c.get("activity") and r["status"] == VerificationStatus.INSUFFICIENT_EVIDENCE.value for r in existing_results)
+        if any(r["claim"] == c.get("activity") and r["status"] in (VerificationStatus.INSUFFICIENT_EVIDENCE.value, VerificationStatus.NOT_ANALYZED.value) for r in existing_results)
     ]
 
-    target_claims = insufficient_claims if insufficient_claims else claims
+    target_claims = unresolved_claims if unresolved_claims else claims
 
     gemini_client = GeminiVerificationClient()
     drone_findings = await gemini_client.analyze_drone_imagery(
@@ -115,6 +115,6 @@ async def drone_eval_node(
         "overall_status": overall_status,
         "drone_findings": drone_findings_dicts,
         "report": report,
-        "requires_drone_verification": any(r["status"] == VerificationStatus.INSUFFICIENT_EVIDENCE.value for r in updated_results),
+        "requires_drone_verification": any(r["status"] in (VerificationStatus.INSUFFICIENT_EVIDENCE.value, VerificationStatus.NOT_ANALYZED.value) for r in updated_results),
         "messages": [AIMessage(content="\n".join(msg_lines))],
     }

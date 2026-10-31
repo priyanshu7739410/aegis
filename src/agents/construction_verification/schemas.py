@@ -9,6 +9,7 @@ class VerificationStatus(StrEnum):
     NOT_SUPPORTED = "NOT_SUPPORTED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     VISION_NOT_EXECUTED = "VISION_NOT_EXECUTED"
+    NOT_ANALYZED = "NOT_ANALYZED"
 
 
 class OfficerDecisionType(StrEnum):
@@ -63,6 +64,10 @@ class ExtractedProjectInfo(BaseModel):
         default_factory=list,
         description="List of specific construction activities claimed to be completed."
     )
+    document_notes: list[str] = Field(
+        default_factory=list,
+        description="Non-construction items, billing categories, date ranges, boilerplate, or administrative notes."
+    )
     missing_fields: list[str] = Field(
         default_factory=list,
         description="Critical fields that could not be found in the document."
@@ -112,9 +117,9 @@ class VisionClaimFinding(BaseModel):
         default_factory=list,
         description="Visible physical ground changes observed between the before and after satellite images."
     )
-    supports_claim: bool | None = Field(
+    supports_claim: bool | None | str = Field(
         default=None,
-        description="True if visible evidence directly supports the observable claim, False if contradicted, None if inconclusive."
+        description="True if visible evidence directly supports the observable claim, False if contradicted, None if inconclusive, or 'NOT_ANALYZED' / 'VISION_NOT_EXECUTED'."
     )
     reasoning: str = Field(description="Evidence-based rationale for the assessment.")
     limitations: list[str] = Field(
@@ -137,8 +142,8 @@ class VisionAnalysisOutput(BaseModel):
 
 class ClaimVerificationResult(BaseModel):
     claim: str = Field(description="Claimed construction activity.")
-    status: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED"] = Field(
-        description="Verification outcome. SUPPORTED: visible evidence supports claim. NOT_SUPPORTED: contradictory evidence. INSUFFICIENT_EVIDENCE: inconclusive or requires higher resolution/on-site inspection. VISION_NOT_EXECUTED: image data missing or vision model failed."
+    status: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED", "NOT_ANALYZED"] = Field(
+        description="Verification outcome. SUPPORTED: visible evidence supports claim. NOT_SUPPORTED: contradictory evidence. INSUFFICIENT_EVIDENCE: inconclusive or requires higher resolution/on-site inspection. VISION_NOT_EXECUTED / NOT_ANALYZED: image data missing, vision not executed, or model rate-limited/failed."
     )
     observations: list[str] = Field(
         default_factory=list,
@@ -157,7 +162,7 @@ class ClaimVerificationResult(BaseModel):
 class DroneVerificationFinding(BaseModel):
     claim: str
     observations: list[str] = Field(default_factory=list)
-    supports_claim: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED"]
+    supports_claim: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED", "NOT_ANALYZED"] | None = None
     reasoning: str
     limitations: list[str] = Field(default_factory=list)
 
@@ -206,6 +211,7 @@ class VisionExecutionAudit(BaseModel):
     image_byte_lengths: list[int] = Field(default_factory=list)
     both_images_included: bool = False
     gemini_model_id: str | None = None
+    model_used: str | None = None
     api_call_status: str = "NOT_ATTEMPTED"  # "SUCCESS", "FAILED", "NOT_ATTEMPTED"
     error_message: str | None = None
     parsed_response_status: str = "PENDING"  # "SUCCESS", "FAILED", "VISION_NOT_EXECUTED", "INSUFFICIENT_EVIDENCE"
@@ -274,6 +280,11 @@ class DiscoveryReport(BaseModel):
     detected_change_area_hectares: float = 0.0
     raw_change_area_m2: float = 0.0
     raw_change_area_hectares: float = 0.0
+    top_candidates_area_m2: float = 0.0
+    top_candidates_area_hectares: float = 0.0
+    top_candidates_fraction_of_raw: float = 0.0
+    runtime_breakdown: dict[str, float] = Field(default_factory=dict)
+    total_runtime_seconds: float = 0.0
     classified_construction_area_hectares: float = 0.0
     classified_agricultural_area_hectares: float = 0.0
     classified_other_area_hectares: float = 0.0

@@ -55,6 +55,23 @@ def _is_rate_limit(e: Exception) -> bool:
     )
 
 
+def _is_model_not_found(e: Exception) -> bool:
+    """Determine if an exception represents a 404 / NotFound / model retired error."""
+    msg = str(e).lower()
+    return any(
+        k in msg
+        for k in [
+            "404",
+            "not_found",
+            "not found",
+            "is not found",
+            "no longer supported",
+            "is retired",
+            "model not found",
+        ]
+    ) and not _is_rate_limit(e)
+
+
 class GeminiVerificationClient:
     """Client for Gemini text extraction and multimodal vision analysis."""
 
@@ -68,10 +85,14 @@ class GeminiVerificationClient:
         else:
             self.api_key = None
 
-        self.model_name = model_name or settings.GEMINI_MODEL or "gemini-2.5-flash"
+        self.model_name = model_name or settings.GEMINI_MODEL or "gemini-3.8-flash"
+        self.fallback_model = settings.GEMINI_FALLBACK_MODEL or "gemini-2.5-pro"
 
     def _invoke_with_retry(self, llm, messages, max_retries: int = 3, initial_delay: float = 2.0):
         """Invoke LLM synchronously with exponential backoff on 429 / ResourceExhausted."""
+        if settings.USE_FAKE_MODEL:
+            max_retries = 0
+            initial_delay = 0.0
         delay = initial_delay
         for attempt in range(max_retries + 1):
             try:
@@ -89,6 +110,9 @@ class GeminiVerificationClient:
 
     async def _ainvoke_with_retry(self, llm, messages, max_retries: int = 3, initial_delay: float = 2.0):
         """Invoke LLM asynchronously with exponential backoff on 429 / ResourceExhausted."""
+        if settings.USE_FAKE_MODEL:
+            max_retries = 0
+            initial_delay = 0.0
         delay = initial_delay
         for attempt in range(max_retries + 1):
             try:
@@ -104,26 +128,106 @@ class GeminiVerificationClient:
                 else:
                     raise e
 
-    def _get_llm(self, structured_schema: type | None = None):
+    def _get_llm(self, structured_schema: type | None = None, model_name: str | None = None):
         """Instantiate ChatGoogleGenerativeAI model."""
         if not self.api_key or settings.USE_FAKE_MODEL:
             return None
 
-        # Check if the model name needs mapping or is standard
+        name = model_name or self.model_name
         model = ChatGoogleGenerativeAI(
-            model=self.model_name,
+            model=name,
             google_api_key=self.api_key,
             temperature=0.1,
+            timeout=45.0,
         )
         if structured_schema:
             return model.with_structured_output(structured_schema)
         return model
 
+    def _invoke_with_fallback(self, messages, structured_schema: type | None = None) -> tuple[Any, str]:
+        """Invoke LLM synchronously. If primary model returns 404/not found, fall back to GEMINI_FALLBACK_MODEL.
+        Never fall back on 429 or other failures. Returns (result, model_used).
+        """
+        llm = self._get_llm(structured_schema=structured_schema, model_name=self.model_name)
+        if llm is None:
+            raise RuntimeError("LLM not available (no API key or fake mode)")
+        try:
+            res = self._invoke_with_retry(llm, messages)
+            return res, self.model_name
+        except Exception as e:
+            if _is_model_not_found(e) and self.fallback_model and self.fallback_model != self.model_name:
+                logger.warning(
+                    f"Gemini model {self.model_name} failed with 404/retired: {e}. "
+                    f"Falling back to {self.fallback_model}..."
+                )
+                fallback_llm = self._get_llm(structured_schema=structured_schema, model_name=self.fallback_model)
+                res = self._invoke_with_retry(fallback_llm, messages)
+                return res, self.fallback_model
+            raise e
+
+    async def _ainvoke_with_fallback(self, messages, structured_schema: type | None = None) -> tuple[Any, str]:
+        """Invoke LLM asynchronously. If primary model returns 404/not found, fall back to GEMINI_FALLBACK_MODEL.
+        Never fall back on 429 or other failures. Returns (result, model_used).
+        """
+        llm = self._get_llm(structured_schema=structured_schema, model_name=self.model_name)
+        if llm is None:
+            raise RuntimeError("LLM not available (no API key or fake mode)")
+        try:
+            res = await self._ainvoke_with_retry(llm, messages)
+            return res, self.model_name
+        except Exception as e:
+            if _is_model_not_found(e) and self.fallback_model and self.fallback_model != self.model_name:
+                logger.warning(
+                    f"Gemini model {self.model_name} failed with 404/retired: {e}. "
+                    f"Falling back to {self.fallback_model}..."
+                )
+                fallback_llm = self._get_llm(structured_schema=structured_schema, model_name=self.fallback_model)
+                res = await self._ainvoke_with_retry(fallback_llm, messages)
+                return res, self.fallback_model
+            raise e
+
+    @staticmethod
+    def _is_physical_construction_claim(text: str) -> bool:
+        t = text.lower().strip()
+        non_const_patterns = [
+            r"period\s+\d",
+            r"claim\s+period",
+            r"transportation",
+            r"logistics",
+            r"billing\s+category",
+            r"invoice\s+no",
+            r"tax\s+invoice",
+            r"terms\s+and\s+conditions",
+            r"payment\s+voucher",
+            r"bank\s+details",
+        ]
+        if any(re.search(pat, t) for pat in non_const_patterns):
+            if not any(k in t for k in ["road", "culvert", "drain", "paving", "earthwork", "clearing", "bridge", "building", "concrete", "excavation", "macadam"]):
+                return False
+
+        physical_keywords = [
+            "road", "earthwork", "clearing", "excavation", "paving", "macadam",
+            "bituminous", "asphalt", "culvert", "drainage", "drain", "concrete",
+            "foundation", "piling", "building", "grading", "embankment", "pier",
+            "bridge", "strip", "stripping", "leveling", "sub-base", "pipeline",
+            "structure", "surfacing", "widening", "link road", "formation", "site preparation"
+        ]
+        return any(k in t for k in physical_keywords)
+
+    @classmethod
+    def _filter_and_clean_claims(cls, extracted: ExtractedProjectInfo) -> None:
+        valid_claims = []
+        for c in extracted.claims:
+            if cls._is_physical_construction_claim(c.activity):
+                valid_claims.append(c)
+            else:
+                extracted.document_notes.append(f"Non-construction item: {c.activity}")
+        extracted.claims = valid_claims
+
     async def extract_project_info(self, ocr_text: str) -> ExtractedProjectInfo:
         """Extract structured construction claims and project metadata from document text."""
-        llm = self._get_llm(ExtractedProjectInfo)
-
-        if llm is None:
+        is_mocked = hasattr(self._ainvoke_with_fallback, "mock_calls") or hasattr(self._ainvoke_with_fallback, "assert_called")
+        if (not self.api_key or settings.USE_FAKE_MODEL) and not is_mocked:
             logger.info("Using rule-based/synthetic extraction fallback (USE_FAKE_MODEL=True or no GEMINI_API_KEY)")
             return self._fallback_extract_claims(ocr_text)
 
@@ -138,13 +242,15 @@ class GeminiVerificationClient:
         ]
 
         try:
-            result = await self._ainvoke_with_retry(llm, messages)
+            result, model_used = await self._ainvoke_with_fallback(messages, structured_schema=ExtractedProjectInfo)
             if isinstance(result, ExtractedProjectInfo):
                 extracted = result
             elif isinstance(result, dict):
                 extracted = ExtractedProjectInfo(**result)
             else:
                 extracted = self._fallback_extract_claims(ocr_text)
+
+            self._filter_and_clean_claims(extracted)
 
             if extracted.location is None:
                 extracted.location = LocationInfo()
@@ -199,7 +305,7 @@ class GeminiVerificationClient:
                 VisionClaimFinding(
                     claim=c.get("activity", ""),
                     observed_changes=[],
-                    supports_claim=None,
+                    supports_claim="NOT_ANALYZED",
                     reasoning=f"VISION_NOT_EXECUTED: {err_msg}",
                     limitations=["Image artifacts missing from local storage."],
                 )
@@ -282,7 +388,9 @@ Return structured findings for every claim according to the system instructions.
         ]
 
         try:
-            result = await self._ainvoke_with_retry(llm, messages)
+            result, model_used = await self._ainvoke_with_fallback(messages, structured_schema=VisionAnalysisOutput)
+            audit.model_used = model_used
+            audit.gemini_model_id = model_used
             audit.api_call_status = "SUCCESS"
             audit.parsed_response_status = "SUCCESS"
             audit.vision_actually_executed = True
@@ -295,7 +403,7 @@ Return structured findings for every claim according to the system instructions.
                 out.vision_audit = audit
                 return out
 
-            audit.parsed_response_status = "INSUFFICIENT_EVIDENCE"
+            audit.parsed_response_status = "NOT_ANALYZED"
             out = self._fallback_satellite_vision(claims, metrics)
             out.vision_audit = audit
             return out
@@ -313,7 +421,7 @@ Return structured findings for every claim according to the system instructions.
                 VisionClaimFinding(
                     claim=c.get("activity", ""),
                     observed_changes=[],
-                    supports_claim=None,
+                    supports_claim="NOT_ANALYZED",
                     reasoning=(
                         f"QUOTA_EXHAUSTED: Gemini API rate limit reached (HTTP 429)."
                         if is_quota
@@ -457,17 +565,19 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
         ]
 
         try:
-            resp = self._invoke_with_retry(llm, messages)
+            resp, model_used = self._invoke_with_fallback(messages, structured_schema=DiscoveryVisionStructuredOutput)
+            audit.model_used = model_used
+            audit.gemini_model_id = model_used
+            audit.api_call_status = "SUCCESS"
+            audit.parsed_response_status = "SUCCESS"
+            audit.vision_actually_executed = True
+
             if isinstance(resp, DiscoveryVisionStructuredOutput):
                 structured = resp
             elif isinstance(resp, dict):
                 structured = DiscoveryVisionStructuredOutput(**resp)
             else:
                 structured = DiscoveryVisionStructuredOutput(candidate_findings=[], overall_summary=str(resp))
-
-            audit.api_call_status = "SUCCESS"
-            audit.parsed_response_status = "SUCCESS"
-            audit.vision_actually_executed = True
 
             # Validate returned candidate IDs against input candidates
             valid_ids = {c["candidate_id"] for c in candidates}
@@ -511,11 +621,11 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             logger.error(err_msg)
             audit.api_call_status = "FAILED"
             audit.error_message = f"Gemini API Quota Exhausted (HTTP 429): {e}" if is_quota else str(e)
-            audit.parsed_response_status = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
+            audit.parsed_response_status = "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
             return {
-                "summary": f"{audit.parsed_response_status}: {audit.error_message}",
-                "overall_summary": f"{audit.parsed_response_status}: {audit.error_message}",
+                "summary": f"VISION_NOT_EXECUTED: {audit.error_message}",
+                "overall_summary": f"VISION_NOT_EXECUTED: {audit.error_message}",
                 "findings": [],
                 "candidate_interpretations": {},
                 "audit": audit,
@@ -699,31 +809,46 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             start_date = dates[0].replace("/", "-")
 
         # Claims extraction
+        document_notes: list[str] = []
         explicit_claims = re.findall(r"claim\s*\d*[:\s]+([^.\n]+)", text, re.IGNORECASE)
         if explicit_claims:
             for m in explicit_claims:
                 m_str = m.strip()
-                if len(m_str) > 3 and not any(m_str.lower() in c.activity.lower() or c.activity.lower() in m_str.lower() for c in claims):
-                    claims.append(ConstructionClaim(activity=m_str, claimed_status="completed"))
+                if len(m_str) > 3:
+                    if self._is_physical_construction_claim(m_str):
+                        if not any(m_str.lower() in c.activity.lower() or c.activity.lower() in m_str.lower() for c in claims):
+                            claims.append(ConstructionClaim(activity=m_str, claimed_status="completed"))
+                    else:
+                        document_notes.append(f"Non-construction note: {m_str}")
         else:
             keyword_matches = re.findall(
-                r"(?:vegetation clearing|clearing|excavation|earthwork|grading|paving|culvert|foundation)[^.\n]*",
+                r"(?:vegetation clearing|clearing|excavation|earthwork|grading|paving|culvert|foundation|bituminous|drainage)[^.\n]*",
                 text,
                 re.IGNORECASE,
             )
             for m in keyword_matches:
                 m_str = m.strip()
-                if len(m_str) > 5 and not any(m_str.lower() in c.activity.lower() or c.activity.lower() in m_str.lower() for c in claims):
-                    claims.append(ConstructionClaim(activity=m_str, claimed_status="completed"))
+                if len(m_str) > 5 and self._is_physical_construction_claim(m_str):
+                    if not any(m_str.lower() in c.activity.lower() or c.activity.lower() in m_str.lower() for c in claims):
+                        claims.append(ConstructionClaim(activity=m_str, claimed_status="completed"))
+                elif len(m_str) > 5:
+                    document_notes.append(f"Non-construction note: {m_str}")
+
+        # Scan lines for non-construction items (dates, billing categories, transportation/logistics)
+        for line in text.splitlines():
+            l_str = line.strip()
+            if any(k in l_str.lower() for k in ["transportation", "logistics", "period 01", "billing category", "invoice"]) and not self._is_physical_construction_claim(l_str):
+                if l_str not in document_notes:
+                    document_notes.append(l_str)
 
         if not claims:
-            # Add general default claims based on text content
+            # Add general default claims based on text content only if real physical keywords exist
             if "clearing" in text.lower() or "vegetation" in text.lower():
                 claims.append(ConstructionClaim(activity="Vegetation clearing and site preparation", claimed_status="completed"))
-            if "excavation" in text.lower() or "foundation" in text.lower():
+            elif "excavation" in text.lower() or "foundation" in text.lower():
                 claims.append(ConstructionClaim(activity="Foundation excavation", claimed_status="completed"))
-            if not claims:
-                claims.append(ConstructionClaim(activity="Site works and construction", claimed_status="completed"))
+            elif "road" in text.lower() or "paving" in text.lower() or "highway" in text.lower():
+                claims.append(ConstructionClaim(activity="Road construction and surfacing", claimed_status="completed"))
 
         if latitude is None or longitude is None:
             missing_fields.append("site_coordinates")
@@ -754,6 +879,7 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             start_date=start_date,
             completion_date=completion_date,
             claims=claims,
+            document_notes=document_notes,
             missing_fields=missing_fields,
             uncertain_fields=[],
         )

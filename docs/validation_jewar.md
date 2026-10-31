@@ -7,7 +7,13 @@
 - **OSM Data Truncation Status**: `Complete / NOT TRUNCATED (470 infrastructure ways, 5550 nodes)`
 - **Discovery GeoJSON Analyzed**: `D:\forge\outputs\construction\discovery\DISC-20261031-E0DFC6\candidates.geojson`
 - **Total Candidates Evaluated**: `15`
-- **Total Verified OSM Footprint in ROI**: `2107.28 ha`
+- **Total Verified OSM Footprint in ROI**: `2107.28 ha` (includes `aeroway=aerodrome` boundary polygon)
+- **Included Man-Made OSM Tags**:
+  - `aeroway`: all tags (`aerodrome`, `runway`, `taxiway`, `apron`, `terminal`, etc.)
+  - `building`: all non-empty values (terminals, hangars, ancillary buildings)
+  - `highway`: all road classes (motorway, trunk, primary, secondary, tertiary, residential, service, track; buffered to 15 m corridor)
+  - `landuse=construction`: active construction zones
+- **Boundary Inclusion Disclosure**: The total OSM footprint of **`2,107.28 ha`** INCLUDES the closed aerodrome perimeter polygon (`way/1089989191`, `aeroway=aerodrome`, 70 nodes, ~1,216.48 ha). If `aeroway=aerodrome` is excluded and only discrete physical infrastructure (runways, taxiways, terminals, roads, buildings) is evaluated, the ground-truth footprint is **`890.80 ha`**.
 
 ## 1. Area-Based Spatial Agreement vs. Random Baseline
 

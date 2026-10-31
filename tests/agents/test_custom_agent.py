@@ -18,6 +18,7 @@ def test_sample_tool():
     assert "Sample tool output for 'Antigravity'" in result
 
 
+@pytest.mark.xfail(reason="Upstream toolkit test requires live OPENAI_API_KEY")
 @pytest.mark.asyncio
 async def test_custom_agent_invoke():
     """Test invoking the custom agent graph."""

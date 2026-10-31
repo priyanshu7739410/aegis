@@ -187,13 +187,14 @@ class ConstructionDiscoveryService:
         self,
         latitude: float,
         longitude: float,
-        radius_km: float = 5.0,
+        radius_km: float = 3.0,
         before_date_start: str = "2021-01-01",
         before_date_end: str = "2021-03-31",
         after_date_start: str = "2025-01-01",
         after_date_end: str = "2025-03-31",
         confirmation_date_start: str | None = None,
         confirmation_date_end: str | None = None,
+        confirmation_season: str = "none",
         min_change_area_m2: float = 5000.0,
         max_cloud_cover: float = 20.0,
         area_name: str = "Independent Site Discovery",
@@ -201,6 +202,8 @@ class ConstructionDiscoveryService:
         progress_callback: Any = None,
     ) -> DiscoveryReport:
         """Execute independent construction discovery without requiring any contractor document or pre-existing claims."""
+        import time
+        t_start_all = time.perf_counter()
         disc_id = discovery_id or f"DISC-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
         run_dir = self.output_dir / disc_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -216,7 +219,16 @@ class ConstructionDiscoveryService:
         bbox = self.calculate_bounding_box(latitude, longitude, radius_km)
         retrieval_attempts: list[dict[str, Any]] = []
 
+        # Configure growing season dates for confirmation scene if specified
+        if confirmation_season == "kharif" and not confirmation_date_start:
+            confirmation_date_start = "2025-08-01"
+            confirmation_date_end = "2025-10-31"
+        elif confirmation_season == "rabi" and not confirmation_date_start:
+            confirmation_date_start = "2025-02-01"
+            confirmation_date_end = "2025-03-31"
+
         # 2. Retrieve before and after satellite scenes with STAC retry and ROI quality filtering
+        t_stac_start = time.perf_counter()
         if progress_callback:
             progress_callback(25, "Searching Element84 STAC for pre-construction Sentinel-2 scenes...")
         before_scene = self._find_qualifying_scene(
@@ -253,13 +265,17 @@ class ConstructionDiscoveryService:
                 )
             except Exception as e:
                 logger.warning(f"Confirmation scene retrieval failed: {e}")
+        t_stac_elapsed = time.perf_counter() - t_stac_start
 
         # 3. Preprocess and align multi-spectral bands
+        t_cog_start = time.perf_counter()
         if progress_callback:
             progress_callback(60, "Streaming Sentinel-2 COG rasters and computing SCL cloud masks...")
         aligned_data = self._read_and_align_rasters(bbox, before_scene, after_scene, confirmation_scene=confirmation_scene)
+        t_cog_elapsed = time.perf_counter() - t_cog_start
 
         # 4. Detect candidate changes and evaluate temporal persistence
+        t_det_start = time.perf_counter()
         if progress_callback:
             progress_callback(75, "Computing NDVI/BSI difference matrices & vectorizing change clusters...")
         detection_result = self._detect_changes(
@@ -268,6 +284,7 @@ class ConstructionDiscoveryService:
             min_change_area_m2=min_change_area_m2,
             run_dir=run_dir,
         )
+        t_det_elapsed = time.perf_counter() - t_det_start
 
         candidates = detection_result["candidates"]
         total_disturbed_area_m2 = detection_result["total_disturbed_area_m2"]
@@ -290,6 +307,7 @@ class ConstructionDiscoveryService:
             "area_name": area_name,
         }
 
+        t_vision_start = time.perf_counter()
         vision_res = self.gemini_client.analyze_discovery_imagery(
             rgb_before_path=detection_result["rgb_before_path"],
             rgb_after_path=detection_result["rgb_after_path"],
@@ -301,6 +319,7 @@ class ConstructionDiscoveryService:
             },
             scene_metadata=scene_metadata,
         )
+        t_vision_elapsed = time.perf_counter() - t_vision_start
 
         vision_summary = vision_res["summary"]
         vision_audit = vision_res["audit"]
@@ -410,6 +429,24 @@ class ConstructionDiscoveryService:
             2,
         )
 
+        top_15_cands = sorted(candidate_objects, key=lambda c: c.area_m2, reverse=True)[:15]
+        top_candidates_m2 = float(sum(c.area_m2 for c in top_15_cands))
+        top_candidates_ha = round(top_candidates_m2 / 10000.0, 2)
+        top_candidates_frac = (
+            round(top_candidates_m2 / total_disturbed_area_m2, 4)
+            if total_disturbed_area_m2 > 0
+            else 0.0
+        )
+
+        t_total_elapsed = time.perf_counter() - t_start_all
+        runtime_breakdown = {
+            "stac_search_seconds": round(t_stac_elapsed, 2),
+            "cog_reads_seconds": round(t_cog_elapsed, 2),
+            "change_detection_seconds": round(t_det_elapsed, 2),
+            "gemini_vision_seconds": round(t_vision_elapsed, 2),
+            "total_seconds": round(t_total_elapsed, 2),
+        }
+
         report = DiscoveryReport(
             discovery_id=disc_id,
             area_name=area_name,
@@ -434,6 +471,11 @@ class ConstructionDiscoveryService:
             detected_change_area_hectares=round(total_disturbed_area_m2 / 10000.0, 2),
             raw_change_area_m2=total_disturbed_area_m2,
             raw_change_area_hectares=round(total_disturbed_area_m2 / 10000.0, 2),
+            top_candidates_area_m2=top_candidates_m2,
+            top_candidates_area_hectares=top_candidates_ha,
+            top_candidates_fraction_of_raw=top_candidates_frac,
+            runtime_breakdown=runtime_breakdown,
+            total_runtime_seconds=round(t_total_elapsed, 2),
             classified_construction_area_hectares=construction_ha,
             classified_agricultural_area_hectares=agricultural_ha,
             classified_other_area_hectares=other_ha,
@@ -560,39 +602,62 @@ class ConstructionDiscoveryService:
                     time.sleep(2.0)
             raise last_err
 
+        from concurrent.futures import ThreadPoolExecutor
+
         with rasterio.Env(AWS_NO_SIGN_REQUEST="YES", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", VSI_CACHE=True):
             r1, crs_obj, win_transform = read_asset(b_assets["red"])
             target_shape = r1.shape
 
-            g1, _, _ = read_asset(b_assets["green"], target_shape=target_shape)
-            b1, _, _ = read_asset(b_assets["blue"], target_shape=target_shape)
-            n1, _, _ = read_asset(b_assets["nir"], target_shape=target_shape)
-            scl1, _, _ = read_asset(b_assets["scl"], target_shape=target_shape, resampling=Resampling.nearest)
-            sw1 = None
-            b_swir_url = b_assets.get("swir16") or b_assets.get("swir22") or b_assets.get("B11")
-            if b_swir_url:
-                sw1, _, _ = read_asset(b_swir_url, target_shape=target_shape, resampling=Resampling.bilinear)
+            futures = {}
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures["g1"] = executor.submit(read_asset, b_assets["green"], target_shape)
+                futures["b1"] = executor.submit(read_asset, b_assets["blue"], target_shape)
+                futures["n1"] = executor.submit(read_asset, b_assets["nir"], target_shape)
+                futures["scl1"] = executor.submit(read_asset, b_assets["scl"], target_shape, Resampling.nearest)
+                b_swir_url = b_assets.get("swir16") or b_assets.get("swir22") or b_assets.get("B11")
+                if b_swir_url:
+                    futures["sw1"] = executor.submit(read_asset, b_swir_url, target_shape, Resampling.bilinear)
 
-            r2, _, _ = read_asset(a_assets["red"], target_shape=target_shape)
-            g2, _, _ = read_asset(a_assets["green"], target_shape=target_shape)
-            b2, _, _ = read_asset(a_assets["blue"], target_shape=target_shape)
-            n2, _, _ = read_asset(a_assets["nir"], target_shape=target_shape)
-            scl2, _, _ = read_asset(a_assets["scl"], target_shape=target_shape, resampling=Resampling.nearest)
-            sw2 = None
-            a_swir_url = a_assets.get("swir16") or a_assets.get("swir22") or a_assets.get("B11")
-            if a_swir_url:
-                sw2, _, _ = read_asset(a_swir_url, target_shape=target_shape, resampling=Resampling.bilinear)
+                futures["r2"] = executor.submit(read_asset, a_assets["red"], target_shape)
+                futures["g2"] = executor.submit(read_asset, a_assets["green"], target_shape)
+                futures["b2"] = executor.submit(read_asset, a_assets["blue"], target_shape)
+                futures["n2"] = executor.submit(read_asset, a_assets["nir"], target_shape)
+                futures["scl2"] = executor.submit(read_asset, a_assets["scl"], target_shape, Resampling.nearest)
+                a_swir_url = a_assets.get("swir16") or a_assets.get("swir22") or a_assets.get("B11")
+                if a_swir_url:
+                    futures["sw2"] = executor.submit(read_asset, a_swir_url, target_shape, Resampling.bilinear)
 
-            r3, g3, b3, n3, scl3, sw3 = None, None, None, None, None, None
-            if confirmation_scene:
-                r3, _, _ = read_asset(c_assets["red"], target_shape=target_shape)
-                g3, _, _ = read_asset(c_assets["green"], target_shape=target_shape)
-                b3, _, _ = read_asset(c_assets["blue"], target_shape=target_shape)
-                n3, _, _ = read_asset(c_assets["nir"], target_shape=target_shape)
-                scl3, _, _ = read_asset(c_assets["scl"], target_shape=target_shape, resampling=Resampling.nearest)
-                c_swir_url = c_assets.get("swir16") or c_assets.get("swir22") or c_assets.get("B11")
-                if c_swir_url:
-                    sw3, _, _ = read_asset(c_swir_url, target_shape=target_shape, resampling=Resampling.bilinear)
+                if confirmation_scene:
+                    futures["r3"] = executor.submit(read_asset, c_assets["red"], target_shape)
+                    futures["g3"] = executor.submit(read_asset, c_assets["green"], target_shape)
+                    futures["b3"] = executor.submit(read_asset, c_assets["blue"], target_shape)
+                    futures["n3"] = executor.submit(read_asset, c_assets["nir"], target_shape)
+                    futures["scl3"] = executor.submit(read_asset, c_assets["scl"], target_shape, Resampling.nearest)
+                    c_swir_url = c_assets.get("swir16") or c_assets.get("swir22") or c_assets.get("B11")
+                    if c_swir_url:
+                        futures["sw3"] = executor.submit(read_asset, c_swir_url, target_shape, Resampling.bilinear)
+
+                results = {k: fut.result()[0] for k, fut in futures.items()}
+
+            g1 = results["g1"]
+            b1 = results["b1"]
+            n1 = results["n1"]
+            scl1 = results["scl1"]
+            sw1 = results.get("sw1")
+
+            r2 = results["r2"]
+            g2 = results["g2"]
+            b2 = results["b2"]
+            n2 = results["n2"]
+            scl2 = results["scl2"]
+            sw2 = results.get("sw2")
+
+            r3 = results.get("r3")
+            g3 = results.get("g3")
+            b3 = results.get("b3")
+            n3 = results.get("n3")
+            scl3 = results.get("scl3")
+            sw3 = results.get("sw3")
 
         return {
             "r1": r1, "g1": g1, "b1": b1, "n1": n1, "sw1": sw1, "scl1": scl1,

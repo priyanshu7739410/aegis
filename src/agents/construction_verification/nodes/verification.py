@@ -19,24 +19,35 @@ async def verification_node(
     state: ConstructionVerificationState, config: RunnableConfig
 ) -> dict[str, Any]:
     """Synthesize satellite metrics and vision findings into claim-by-claim verification report."""
-    claims = state.get("construction_claims", [])
-    vision_findings = state.get("vision_findings", {}).get("findings", [])
-    metrics = state.get("satellite_metrics", {})
+    claims = state.get("construction_claims") or []
+    vision_findings = (state.get("vision_findings") or {}).get("findings") or []
+    metrics = state.get("satellite_metrics") or {}
     case_id = state.get("case_id", "CASE-001")
     project_name = state.get("project_name", "Construction Project")
     construction_type = state.get("construction_type", "Civil Works")
-    location = state.get("construction_location", {})
+    location = state.get("construction_location") or {}
     start_date = state.get("start_date")
     completion_date = state.get("completion_date")
 
     verification_results: list[dict[str, Any]] = []
     requires_drone = False
 
+    vision_audit = state.get("vision_audit") or {}
+    vision_executed = bool(vision_audit.get("vision_actually_executed", False))
+
     # Match each claim with vision finding & deterministic metrics
     for claim_dict in claims:
         activity = claim_dict.get("activity", "")
         # Find matching vision finding
-        finding = next((f for f in vision_findings if f.get("claim") == activity), None)
+        finding = next(
+            (
+                f for f in vision_findings
+                if f.get("claim") == activity
+                or f.get("claim", "").strip().lower() in activity.strip().lower()
+                or activity.strip().lower() in f.get("claim", "").strip().lower()
+            ),
+            None,
+        )
 
         if finding:
             supports = finding.get("supports_claim")
@@ -44,7 +55,11 @@ async def verification_node(
             reason = finding.get("reasoning", "")
             limits = finding.get("limitations", [])
 
-            if supports is True:
+            if not vision_executed or supports in ("NOT_ANALYZED", "VISION_NOT_EXECUTED"):
+                status = VerificationStatus.NOT_ANALYZED
+                action = "Vision analysis not executed (quota, missing imagery, or API failure). Re-run verification or perform physical inspection."
+                requires_drone = True
+            elif supports is True:
                 status = VerificationStatus.SUPPORTED
                 action = "Claim supported by visible satellite observation. Officer review recommended."
             elif supports is False:
@@ -53,16 +68,24 @@ async def verification_node(
                 requires_drone = True
             else:
                 status = VerificationStatus.INSUFFICIENT_EVIDENCE
-                action = "Request high-resolution drone imagery or on-site physical engineering inspection."
+                action = "Satellite imagery examined but inconclusive due to resolution limits. Request drone imagery or on-site physical engineering inspection."
                 requires_drone = True
         else:
             # Default fallback
-            status = VerificationStatus.INSUFFICIENT_EVIDENCE
-            obs = ["No conclusive satellite observation available for this activity."]
-            reason = "Satellite resolution or observation conditions cannot establish completion of this claim."
-            limits = ["Sentinel-2 spatial resolution (10m) cannot resolve fine-grained or sub-surface engineering."]
-            action = "Request drone imagery or physical inspection."
-            requires_drone = True
+            if not vision_executed:
+                status = VerificationStatus.NOT_ANALYZED
+                obs = ["Vision analysis not executed."]
+                reason = "Vision model was not executed due to missing imagery, quota, or network error."
+                limits = ["Image analysis did not run."]
+                action = "Vision analysis not executed. Re-run verification or perform physical inspection."
+                requires_drone = True
+            else:
+                status = VerificationStatus.INSUFFICIENT_EVIDENCE
+                obs = ["No conclusive satellite observation available for this activity."]
+                reason = "Satellite resolution or observation conditions cannot establish completion of this claim."
+                limits = ["Sentinel-2 spatial resolution (10m) cannot resolve fine-grained or sub-surface engineering."]
+                action = "Request drone imagery or physical inspection."
+                requires_drone = True
 
         result = ClaimVerificationResult(
             claim=activity,
@@ -77,8 +100,10 @@ async def verification_node(
     # Determine overall status
     if any(r["status"] == VerificationStatus.NOT_SUPPORTED.value for r in verification_results):
         overall_status = "POTENTIAL_CONTRADICTION"
-    elif requires_drone or any(r["status"] == VerificationStatus.INSUFFICIENT_EVIDENCE.value for r in verification_results):
+    elif any(r["status"] == VerificationStatus.INSUFFICIENT_EVIDENCE.value for r in verification_results):
         overall_status = "INSUFFICIENT_EVIDENCE_REQUIRES_INSPECTION"
+    elif any(r["status"] == VerificationStatus.NOT_ANALYZED.value for r in verification_results):
+        overall_status = "NOT_ANALYZED_REQUIRES_INSPECTION"
     else:
         overall_status = "SATELLITE_EVIDENCE_SUPPORTED"
 

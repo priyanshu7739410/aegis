@@ -27,6 +27,7 @@ class ConstructionVerificationState(MessagesState, total=False):
     satellite_metrics: dict[str, Any]
     satellite_error: str | None
     vision_findings: dict[str, Any]
+    vision_audit: dict[str, Any]
 
     verification_results: list[dict[str, Any]]
     overall_status: str

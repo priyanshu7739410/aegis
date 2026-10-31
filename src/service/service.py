@@ -515,17 +515,23 @@ async def health_check():
         components["gemini_api"] = {
             "status": "configured",
             "key_present": True,
-            "model": getattr(settings, "GEMINI_VISION_MODEL", "gemini-2.5-flash"),
+            "model": settings.GEMINI_MODEL,
+            "fallback_model": settings.GEMINI_FALLBACK_MODEL,
         }
     else:
         components["gemini_api"] = {"status": "missing_key", "key_present": False}
         overall_ok = False
 
-    # 3. Check OCR configuration
+    # 3. Check OCR configuration truthfully
+    ocr_key = (
+        getattr(settings, "OCR_API_KEY", None)
+        or os.environ.get("OCR_API_KEY")
+    )
     components["ocr"] = {
         "status": "configured",
-        "engine": "gemini_multimodal_ocr",
-        "external_api_key_configured": bool(gemini_key or os.environ.get("OCR_API_KEY")),
+        "pdf_engine": "pypdf_local",
+        "image_engine": "ocr_space_api" if ocr_key else "manual_or_ocr_space_key_required",
+        "ocr_space_api_key_configured": bool(ocr_key),
     }
 
     # 4. Optional Langfuse check

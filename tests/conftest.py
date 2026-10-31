@@ -12,6 +12,7 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "docker: mark test as requiring docker containers")
+    config.addinivalue_line("markers", "live: mark test as calling live external APIs over the network")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -25,5 +26,6 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture
 def mock_env():
     """Fixture to ensure environment is clean for each test."""
-    with patch.dict(os.environ, {}, clear=True):
+    preserved = {k: os.environ[k] for k in ('SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PATH', 'TEMP', 'TMP') if k in os.environ}
+    with patch.dict(os.environ, preserved, clear=True):
         yield

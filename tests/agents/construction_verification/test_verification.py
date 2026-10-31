@@ -70,6 +70,7 @@ async def test_drone_verification_routing_and_reevaluation(tmp_path):
             ]
         },
         "satellite_metrics": {"valid_observation_coverage_pct": 98.0},
+        "vision_audit": {"vision_actually_executed": True},
     }
 
     # Run verification node

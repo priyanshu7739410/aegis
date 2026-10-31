@@ -14,10 +14,10 @@ async def vision_analysis_node(
     state: ConstructionVerificationState, config: RunnableConfig
 ) -> dict[str, Any]:
     """Execute Gemini Multimodal Vision analysis on pre/post satellite images and claims."""
-    metrics = state.get("satellite_metrics", {})
-    claims = state.get("construction_claims", [])
-    before_scene = state.get("before_scene", {})
-    after_scene = state.get("after_scene", {})
+    metrics = state.get("satellite_metrics") or {}
+    claims = state.get("construction_claims") or []
+    before_scene = state.get("before_scene") or {}
+    after_scene = state.get("after_scene") or {}
     errors = list(state.get("errors", []))
 
     rgb_before = metrics.get("rgb_before_preview_path")
@@ -59,11 +59,13 @@ async def vision_analysis_node(
             )
             msg_lines.append(f"- **{f.get('claim')}**: {status_indicator}\n  _{f.get('reasoning')}_")
 
+        audit_dict = vision_output.vision_audit.model_dump() if getattr(vision_output, "vision_audit", None) else {}
         return {
             "vision_findings": {
                 "findings": findings_dicts,
                 "general_observations": vision_output.general_observations,
             },
+            "vision_audit": audit_dict,
             "messages": [AIMessage(content="\n".join(msg_lines))],
         }
 
