@@ -680,25 +680,28 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                             st.session_state.cv_ocr_text = extracted
                             st.session_state.cv_ocr_status = "success"
 
-                            with st.spinner("Gemini is parsing project details and claims..."):
+                            with st.spinner("Parsing project details and claims..."):
                                 try:
                                     gemini_client = GeminiVerificationClient()
                                     info = await gemini_client.extract_project_info(extracted)
-                                    st.session_state.cv_project_name = info.project_name or ""
-                                    st.session_state.cv_construction_type = info.construction_type or ""
-                                    if info.location and info.location.latitude is not None:
-                                        st.session_state.cv_lat = info.location.latitude
-                                    if info.location and info.location.longitude is not None:
-                                        st.session_state.cv_lon = info.location.longitude
-                                    if info.start_date:
-                                        st.session_state.cv_start_date = info.start_date
-                                    if info.completion_date:
-                                        st.session_state.cv_completion_date = info.completion_date
-                                    if info.claims:
-                                        st.session_state.cv_claims = [c.model_dump() for c in info.claims]
                                 except Exception as e_extract:
-                                    logger.warning(f"Structured extraction notice: {e_extract}")
-                                    st.warning(f"⚠️ Model parsing notice: {e_extract}. Used rule-based fallback parser.")
+                                    logger.warning(f"Gemini extraction failed: {e_extract}. Using rule-based fallback.")
+                                    st.warning(f"⚠️ Model parsing notice: {e_extract}. Using rule-based fallback parser.")
+                                    gemini_client = GeminiVerificationClient()
+                                    info = gemini_client._fallback_extract_claims(extracted)
+
+                                st.session_state.cv_project_name = info.project_name or ""
+                                st.session_state.cv_construction_type = info.construction_type or ""
+                                if info.location and info.location.latitude is not None:
+                                    st.session_state.cv_lat = info.location.latitude
+                                if info.location and info.location.longitude is not None:
+                                    st.session_state.cv_lon = info.location.longitude
+                                if info.start_date:
+                                    st.session_state.cv_start_date = info.start_date
+                                if info.completion_date:
+                                    st.session_state.cv_completion_date = info.completion_date
+                                if info.claims:
+                                    st.session_state.cv_claims = [c.model_dump() for c in info.claims]
                             st.success(f"✅ OCR extraction successful ({len(extracted)} characters)!")
                             st.rerun()
                         else:
