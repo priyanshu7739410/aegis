@@ -531,7 +531,7 @@ class AgentClient:
         except httpx.HTTPError as e:
             raise AgentClientError(f"Error retrieving case decision: {e}")
 
-    def run_construction_discovery(
+    def start_construction_discovery(
         self,
         latitude: float = 28.17,
         longitude: float = 77.61,
@@ -540,11 +540,13 @@ class AgentClient:
         before_date_end: str = "2021-03-31",
         after_date_start: str = "2025-01-01",
         after_date_end: str = "2025-03-31",
+        confirmation_date_start: str | None = None,
+        confirmation_date_end: str | None = None,
         min_change_area_m2: float = 5000.0,
         max_cloud_cover: float = 20.0,
         area_name: str = "Noida International Airport, Jewar",
     ) -> dict[str, Any]:
-        """Run independent construction discovery across multi-temporal Sentinel-2 imagery."""
+        """Start an asynchronous satellite construction discovery job."""
         url = f"{self.base_url}/construction/discover"
         payload = {
             "latitude": latitude,
@@ -554,21 +556,82 @@ class AgentClient:
             "before_date_end": before_date_end,
             "after_date_start": after_date_start,
             "after_date_end": after_date_end,
+            "confirmation_date_start": confirmation_date_start,
+            "confirmation_date_end": confirmation_date_end,
             "min_change_area_m2": min_change_area_m2,
             "max_cloud_cover": max_cloud_cover,
             "area_name": area_name,
         }
         try:
-            response = httpx.post(
-                url,
-                json=payload,
-                headers=self._headers,
-                timeout=180.0,
-            )
+            response = httpx.post(url, json=payload, headers=self._headers, timeout=self.timeout)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            raise AgentClientError(f"Error executing construction discovery: {e}")
+            raise AgentClientError(f"Error starting construction discovery job: {e}")
+
+    def get_discovery_job_status(self, job_or_discovery_id: str) -> dict[str, Any]:
+        """Poll the status and progress of an asynchronous discovery job."""
+        url = f"{self.base_url}/construction/discover/{job_or_discovery_id}/status"
+        try:
+            response = httpx.get(url, headers=self._headers, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error fetching discovery job status: {e}")
+
+    def run_construction_discovery(
+        self,
+        latitude: float = 28.17,
+        longitude: float = 77.61,
+        radius_km: float = 5.0,
+        before_date_start: str = "2021-01-01",
+        before_date_end: str = "2021-03-31",
+        after_date_start: str = "2025-01-01",
+        after_date_end: str = "2025-03-31",
+        confirmation_date_start: str | None = None,
+        confirmation_date_end: str | None = None,
+        min_change_area_m2: float = 5000.0,
+        max_cloud_cover: float = 20.0,
+        area_name: str = "Noida International Airport, Jewar",
+        max_wait_seconds: float = 120.0,
+        poll_interval: float = 1.0,
+    ) -> dict[str, Any]:
+        """Start async discovery job and poll status until complete, keeping individual requests under proxy timeouts."""
+        import time
+
+        job = self.start_construction_discovery(
+            latitude=latitude,
+            longitude=longitude,
+            radius_km=radius_km,
+            before_date_start=before_date_start,
+            before_date_end=before_date_end,
+            after_date_start=after_date_start,
+            after_date_end=after_date_end,
+            confirmation_date_start=confirmation_date_start,
+            confirmation_date_end=confirmation_date_end,
+            min_change_area_m2=min_change_area_m2,
+            max_cloud_cover=max_cloud_cover,
+            area_name=area_name,
+        )
+        job_id = job["job_id"]
+        start_t = time.time()
+        while time.time() - start_t < max_wait_seconds:
+            status_data = self.get_discovery_job_status(job_id)
+            status_val = status_data.get("status")
+            if status_val == "completed":
+                rep = status_data.get("report")
+                if rep:
+                    return rep
+                disc_id = status_data.get("discovery_id")
+                if disc_id:
+                    return self.get_discovery_report(disc_id)
+                return status_data
+            elif status_val == "failed":
+                err = status_data.get("error") or status_data.get("message", "Unknown error")
+                raise AgentClientError(f"Discovery job {job_id} failed: {err}")
+            time.sleep(poll_interval)
+
+        raise AgentClientError(f"Discovery job {job_id} timed out after {max_wait_seconds} seconds")
 
     def get_discovery_report(self, discovery_id: str) -> dict[str, Any]:
         """Retrieve previous construction discovery report."""

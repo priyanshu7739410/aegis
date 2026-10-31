@@ -11,10 +11,11 @@ Independent satellite change detection and construction discovery benchmark exec
 | **Search Radius** | `5.0 km` (Approx. 78.5 km² search footprint) |
 | **Pre-Construction Period (Before)** | `2021-01-01` to `2021-03-31` |
 | **Post-Construction Period (After)** | `2025-01-01` to `2025-03-31` |
+| **Confirmation Period (Temporal Persistence)** | `2025-10-01` to `2025-12-31` |
 | **Native Spatial Resolution** | `10.0 meters / pixel` |
 | **CRS & Grid** | `EPSG:32643` |
 | **Raster Grid Shape** | `1020 x 1025 pixels` |
-| **Total Pipeline Runtime** | **`138.9 seconds`** |
+| **Total Pipeline Runtime** | **`461.7 seconds`** (3-scene multi-temporal retrieval and persistence) |
 
 ## 2. Satellite Scenes & Provenance
 
@@ -22,12 +23,15 @@ Independent satellite change detection and construction discovery benchmark exec
 | :--- | :--- | :--- | :--- | :--- |
 | **Before (Pre-Works)** | `S2A_43RGM_20210320_1_L2A` | `2021-03-20` | `0.0%` | `> 95%` |
 | **After (Post-Works)** | `S2B_43RGM_20250324_0_L2A` | `2025-03-24` | `0.0%` | `> 95%` |
+| **Confirmation (Post-Monsoon)** | `S2B_43RGM_20251129_0_L2A` | `2025-11-29` | `0.0%` | `> 95%` |
 
 ## 3. Honest Surface Area Breakdown
 
 | Area Metric | Extent (Hectares) | Extent (m²) | Notes |
 | :--- | :--- | :--- | :--- |
 | **Raw Detected Change Area** | **`2,169.3 ha`** | `21,692,800 m²` | All valid pixels with Δ NDVI < -0.15 |
+| **Persistent Change Extent (3-Scene Confirmed)** | **`1,765.4 ha`** | `17,653,600 m²` | Confirmed permanent alteration without crop rebound |
+| **Seasonal Crop Recovery Extent** | **`403.9 ha`** | `4,039,200 m²` | Vegetation that rebounded after harvest (agriculture) |
 | **Classified Construction** | **`0.0 ha`** | `0 m²` | Sum of candidate polygons classified as infrastructure |
 | **Classified Agriculture / Other** | **`862.8 ha`** | `8,628,300 m²` | Seasonal crop clearing or ambiguous spectral loss |
 | **Candidate Polygons Count** | **`15` zones** | — | Discrete contiguous clusters >= 5,000 m² |
@@ -36,7 +40,7 @@ Independent satellite change detection and construction discovery benchmark exec
 
 | Taxonomy Category | Count | Description |
 | :--- | :--- | :--- |
-| `CONSTRUCTION` | **0** | Runways, taxiways, aprons, terminal foundation, and Yamuna Expressway interchange earthworks |
+| `CONSTRUCTION` | **0** | Permanent infrastructure, runways, buildings, roads, and civil earthworks |
 | `AGRICULTURAL_HARVEST` | **0** | Seasonal crop harvesting / regular field boundary clearing |
 | `WATER_BODY` | **0** | Drainage ponds, retention basins, or canal alterations |
 | `CLOUD_OR_ARTIFACT` | **0** | Sensor noise or unmasked haze |
@@ -44,7 +48,7 @@ Independent satellite change detection and construction discovery benchmark exec
 
 ## 5. Top Identified Candidate Infrastructure Polygons
 
-| Candidate ID | Area (ha) | Centroid (Lat, Lon) | Mean Δ NDVI | Mean Δ BSI | Gemini Interpretation |
+| Candidate ID | Area (ha) | Centroid (Lat, Lon) | Mean Δ NDVI | Mean Δ BSI | Interpretation |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **CANDIDATE-01** | 539.80 ha | `(28.176066, 77.598702)` | `-0.306` | `+0.128` | [UNCLEAR] Candidate surface disturbance with 539.8 ha extent.... |
 | **CANDIDATE-02** | 109.39 ha | `(28.158848, 77.623997)` | `-0.493` | `+0.152` | [UNCLEAR] Candidate surface disturbance with 109.39 ha extent.... |
@@ -60,13 +64,13 @@ Independent satellite change detection and construction discovery benchmark exec
 ## 6. Verification Audit & Provenance
 
 - **Vision Audit Status**: `FAILED`
-- **Parsed Response Status**: `VISION_NOT_EXECUTED`
+- **Parsed Response Status**: `QUOTA_EXHAUSTED`
 - **Gemini Model ID**: `gemini-2.5-flash`
 - **Vision Actually Executed**: `False`
 - **Image Byte Lengths**: `[2222244, 2103128]`
-- **Audit Timestamp**: `2026-10-31T11:26:17.261813+00:00`
+- **Audit Timestamp**: `2026-10-31T12:20:22.820182+00:00`
 
 ## 7. Seasonality & Validation Linkage
 
-- **Seasonality Note**: `2-scene analysis: cannot distinguish permanent construction from seasonal crop cycles without a confirmation scene. Use caution with agricultural areas.`
-- **Ground-Truth Validation**: Correlated against OpenStreetMap in `docs/validation_jewar.md` (80.0% candidate precision, 100% aeroway capture).
+- **Seasonality Note**: `3-scene temporal persistence verified using confirmation scene S2B_43RGM_20251129_0_L2A (2025-11-29). Persistent change: 1765.36 ha, Seasonal recovery: 403.92 ha.`
+- **Ground-Truth Validation**: Correlated against OpenStreetMap in `docs/validation_jewar.md` (66.71% area precision vs. 26.03% random baseline).

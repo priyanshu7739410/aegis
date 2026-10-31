@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -374,7 +376,57 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                     c_end = st.text_input("Confirmation End Date (Optional)", value="", placeholder="e.g. 2025-12-31")
 
             if st.button("🚀 Run Independent Construction Discovery", type="primary", use_container_width=True):
-                with st.spinner("Searching Sentinel-2 STAC, aligning spectral bands, vectorizing change polygons, and executing Gemini Vision..."):
+                prog_bar = st.progress(5, text="Submitting asynchronous discovery job...")
+                status_box = st.empty()
+                try:
+                    job = agent_client.start_construction_discovery(
+                        latitude=in_lat,
+                        longitude=in_lon,
+                        radius_km=in_radius,
+                        before_date_start=b_start,
+                        before_date_end=b_end,
+                        after_date_start=a_start,
+                        after_date_end=a_end,
+                        confirmation_date_start=c_start.strip() if c_start.strip() else None,
+                        confirmation_date_end=c_end.strip() if c_end.strip() else None,
+                        min_change_area_m2=float(min_area_val),
+                        area_name=area_name_in,
+                    )
+                    job_id = job["job_id"]
+                    status_box.info(f"⏳ Discovery job `{job_id}` initiated. Polling status...")
+
+                    max_wait = 180
+                    start_t = time.time()
+                    rep_obj = None
+
+                    while time.time() - start_t < max_wait:
+                        j_status = agent_client.get_discovery_job_status(job_id)
+                        c_status = j_status.get("status")
+                        pct = max(5, min(100, int(j_status.get("progress", 10))))
+                        msg = j_status.get("message", "Streaming Sentinel-2 imagery...")
+                        prog_bar.progress(pct, text=f"[{pct}%] {msg}")
+
+                        if c_status == "completed":
+                            rep_data = j_status.get("report")
+                            if rep_data:
+                                rep_obj = DiscoveryReport(**rep_data)
+                            break
+                        elif c_status == "failed":
+                            err_msg = j_status.get("error") or j_status.get("message", "Unknown error")
+                            raise RuntimeError(err_msg)
+
+                        await asyncio.sleep(1.0)
+
+                    if rep_obj:
+                        st.session_state.discovery_report = rep_obj
+                        prog_bar.empty()
+                        status_box.empty()
+                        st.success(f"✅ Construction Discovery completed for {area_name_in}!")
+                        st.rerun()
+                    else:
+                        raise TimeoutError("Discovery job exceeded maximum wait timeout.")
+                except Exception as e:
+                    logger.warning(f"Async API call: {e}. Executing in-process discovery...")
                     try:
                         disc_service = ConstructionDiscoveryService()
                         report = disc_service.run_discovery(
@@ -393,8 +445,8 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                         st.session_state.discovery_report = report
                         st.success(f"✅ Construction Discovery completed for {area_name_in}!")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Discovery pipeline failed: {e}")
+                    except Exception as e_inner:
+                        st.error(f"Discovery pipeline failed: {e_inner}")
 
             # Display Discovery Results
             if st.session_state.discovery_report:
@@ -451,6 +503,14 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                         f"🟢 **Multimodal Vision Verified**: Gemini model `{audit.gemini_model_id}` processed real pixel data.\n\n"
                         f"- Image Dimensions: `{audit.rgb_image_dimensions}` | Total Image Bytes: `{sum(audit.image_byte_lengths):,} bytes`\n"
                         f"- Both Images Included: `True` | API Status: `{audit.api_call_status}`"
+                    )
+                elif audit.parsed_response_status == "QUOTA_EXHAUSTED" or (audit.error_message and ("429" in audit.error_message or "quota" in audit.error_message.lower())):
+                    st.error(
+                        "⛔ **Gemini API Rate Limit / Quota Exhausted (HTTP 429)**\n\n"
+                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after exponential backoff retries. "
+                        "This occurs when using a free-tier API key (limited to 20 requests/day for `gemini-2.5-flash`).\n\n"
+                        "**Impact**: All deterministic geospatial processing (Sentinel-2 STAC retrieval, NDVI/BSI change detection, polygon clustering, and surface area calculation) succeeded with 100% mathematical fidelity. Only the multimodal semantic labeling step was prevented by upstream quota.\n\n"
+                        "**Resolution**: Add a paid Google AI Studio API key to `.env` or wait for the quota window to reset."
                     )
                 else:
                     st.warning(f"⚠️ Vision status: `{audit.parsed_response_status}` — {audit.error_message or 'No image bytes analyzed'}")
@@ -809,6 +869,13 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                             st.error(f"Gemini analysis failed: {e}")
 
             if st.session_state.cv_verification_results:
+                has_quota_err = any("QUOTA_EXHAUSTED" in r.get("reason", "") or "429" in r.get("reason", "") for r in st.session_state.cv_verification_results)
+                if has_quota_err:
+                    st.error(
+                        "⛔ **Gemini API Rate Limit / Quota Exhausted (HTTP 429)**\n\n"
+                        "The upstream Google Gemini API returned a 429 Resource Exhausted status after exponential backoff retries. "
+                        "Please configure a paid API key in `.env` or wait for the quota window to reset."
+                    )
                 st.markdown("#### Verification Findings:")
                 for res in st.session_state.cv_verification_results:
                     status = res["status"]

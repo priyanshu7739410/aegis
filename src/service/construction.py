@@ -1,3 +1,5 @@
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -36,6 +38,9 @@ DECISIONS_DIR.mkdir(parents=True, exist_ok=True)
 CASES_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_SIZE = 25 * 1024 * 1024  # 25 MB
+
+_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+DISCOVERY_JOBS: dict[str, dict[str, Any]] = {}
 
 
 class UploadResponse(BaseModel):
@@ -466,16 +471,38 @@ class DiscoveryInput(BaseModel):
     before_date_end: str = Field(default="2021-03-31", description="Pre-construction end date (YYYY-MM-DD)")
     after_date_start: str = Field(default="2025-01-01", description="Post-construction start date (YYYY-MM-DD)")
     after_date_end: str = Field(default="2025-03-31", description="Post-construction end date (YYYY-MM-DD)")
+    confirmation_date_start: str | None = Field(default=None, description="Optional confirmation start date (YYYY-MM-DD)")
+    confirmation_date_end: str | None = Field(default=None, description="Optional confirmation end date (YYYY-MM-DD)")
     min_change_area_m2: float = Field(default=5000.0, description="Minimum candidate mapping area in m^2")
     max_cloud_cover: float = Field(default=20.0, description="Maximum scene cloud cover percentage")
     area_name: str = Field(default="Noida International Airport, Jewar", description="Descriptive name")
 
 
-@router.post("/discover", response_model=DiscoveryReport)
-async def run_construction_discovery(input_data: DiscoveryInput) -> DiscoveryReport:
-    """Execute independent satellite construction discovery without contractor documents."""
+class DiscoveryJobStatus(BaseModel):
+    job_id: str
+    status: str  # "queued", "processing", "completed", "failed"
+    progress: int = 0
+    message: str = "Job queued"
+    discovery_id: str | None = None
+    created_at: str
+    updated_at: str
+    report: dict[str, Any] | None = None
+    error: str | None = None
+
+
+def _execute_discovery_sync(job_id: str, input_data: DiscoveryInput):
+    """Worker function executed in thread pool for asynchronous satellite discovery."""
     service = ConstructionDiscoveryService()
+
+    def update_progress(pct: int, msg: str):
+        if job_id in DISCOVERY_JOBS:
+            DISCOVERY_JOBS[job_id]["progress"] = pct
+            DISCOVERY_JOBS[job_id]["message"] = msg
+            DISCOVERY_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
     try:
+        DISCOVERY_JOBS[job_id]["status"] = "processing"
+        DISCOVERY_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
         report = service.run_discovery(
             latitude=input_data.latitude,
             longitude=input_data.longitude,
@@ -484,16 +511,79 @@ async def run_construction_discovery(input_data: DiscoveryInput) -> DiscoveryRep
             before_date_end=input_data.before_date_end,
             after_date_start=input_data.after_date_start,
             after_date_end=input_data.after_date_end,
+            confirmation_date_start=input_data.confirmation_date_start,
+            confirmation_date_end=input_data.confirmation_date_end,
             min_change_area_m2=input_data.min_change_area_m2,
             max_cloud_cover=input_data.max_cloud_cover,
             area_name=input_data.area_name,
+            progress_callback=update_progress,
         )
-        return report
-    except DiscoveryError as de:
-        raise HTTPException(status_code=400, detail=str(de))
+        DISCOVERY_JOBS[job_id]["status"] = "completed"
+        DISCOVERY_JOBS[job_id]["progress"] = 100
+        DISCOVERY_JOBS[job_id]["message"] = f"Discovery completed. Found {len(report.candidates)} candidate zones."
+        DISCOVERY_JOBS[job_id]["discovery_id"] = report.discovery_id
+        DISCOVERY_JOBS[job_id]["report"] = report.model_dump()
+        DISCOVERY_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
     except Exception as e:
-        logger.error(f"Discovery pipeline failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Discovery failed: {e}")
+        logger.error(f"Discovery job {job_id} failed: {e}")
+        DISCOVERY_JOBS[job_id]["status"] = "failed"
+        DISCOVERY_JOBS[job_id]["message"] = f"Discovery pipeline failed: {e}"
+        DISCOVERY_JOBS[job_id]["error"] = str(e)
+        DISCOVERY_JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+@router.post("/discover", response_model=DiscoveryJobStatus, status_code=status.HTTP_202_ACCEPTED)
+async def run_construction_discovery(input_data: DiscoveryInput) -> dict[str, Any]:
+    """Start an asynchronous independent satellite construction discovery job (Mode B)."""
+    job_id = f"JOB-{uuid.uuid4().hex[:8].upper()}"
+    now_str = datetime.now(timezone.utc).isoformat()
+    job_info = {
+        "job_id": job_id,
+        "status": "processing",
+        "progress": 5,
+        "message": f"Queued discovery for {input_data.area_name}...",
+        "discovery_id": None,
+        "created_at": now_str,
+        "updated_at": now_str,
+        "report": None,
+        "error": None,
+    }
+    DISCOVERY_JOBS[job_id] = job_info
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_thread_pool, _execute_discovery_sync, job_id, input_data)
+    return job_info
+
+
+@router.get("/discover/{id}/status", response_model=DiscoveryJobStatus)
+async def get_discovery_job_status(id: str) -> dict[str, Any]:
+    """Poll asynchronous discovery job progress or retrieve completed job status."""
+    if id in DISCOVERY_JOBS:
+        return DISCOVERY_JOBS[id]
+
+    # Support looking up completed discovery ID on disk
+    service = ConstructionDiscoveryService()
+    report_file = service.output_dir / id / "discovery_report.json"
+    if report_file.exists():
+        try:
+            with open(report_file, "r", encoding="utf-8") as f:
+                rep_data = json.load(f)
+            now_str = datetime.now(timezone.utc).isoformat()
+            return {
+                "job_id": id,
+                "status": "completed",
+                "progress": 100,
+                "message": "Discovery completed",
+                "discovery_id": id,
+                "created_at": now_str,
+                "updated_at": now_str,
+                "report": rep_data,
+                "error": None,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not read discovery report: {e}")
+
+    raise HTTPException(status_code=404, detail=f"Discovery job or ID '{id}' not found")
 
 
 @router.get("/discover/{discovery_id}")

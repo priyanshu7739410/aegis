@@ -26,7 +26,7 @@ def run_benchmark():
     logger.info("Initializing Construction Discovery Service for Jewar Airport Benchmark...")
     service = ConstructionDiscoveryService()
 
-    logger.info("Running live Sentinel-2 discovery on Jewar Airport (lat=28.17, lon=77.61, radius=5km)...")
+    logger.info("Running live Sentinel-2 3-scene discovery on Jewar Airport (lat=28.17, lon=77.61, radius=5km)...")
     t0 = time.time()
     report = service.run_discovery(
         latitude=28.17,
@@ -36,6 +36,8 @@ def run_benchmark():
         before_date_end="2021-03-31",
         after_date_start="2025-01-01",
         after_date_end="2025-03-31",
+        confirmation_date_start="2025-10-01",
+        confirmation_date_end="2025-12-31",
         area_name="Noida International Airport (Jewar, Uttar Pradesh)",
     )
     runtime_s = round(time.time() - t0, 1)
@@ -53,6 +55,19 @@ def run_benchmark():
         cls_key = str(c.classification.value if hasattr(c.classification, "value") else (c.classification or "UNCLEAR"))
         breakdown[cls_key] = breakdown.get(cls_key, 0) + 1
 
+    conf_row = ""
+    if report.confirmation_scene_id:
+        conf_row = f"| **Confirmation (Post-Monsoon)** | `{report.confirmation_scene_id}` | `{report.confirmation_acquisition_date}` | `{report.confirmation_cloud_cover_pct:.1f}%` | `> 95%` |\n"
+
+    pers_row = ""
+    if report.persistent_change_area_m2 is not None:
+        pers_ha = report.persistent_change_area_hectares or round(report.persistent_change_area_m2 / 10000.0, 1)
+        seas_ha = round((report.seasonal_vegetation_area_m2 or 0.0) / 10000.0, 1)
+        pers_row = (
+            f"| **Persistent Change Extent (3-Scene Confirmed)** | **`{pers_ha:,.1f} ha`** | `{report.persistent_change_area_m2:,.0f} m²` | Confirmed permanent alteration without crop rebound |\n"
+            f"| **Seasonal Crop Recovery Extent** | **`{seas_ha:,.1f} ha`** | `{report.seasonal_vegetation_area_m2:,.0f} m²` | Vegetation that rebounded after harvest (agriculture) |\n"
+        )
+
     benchmark_md = f"""# Live Benchmark Report: Noida International Airport (Jewar)
 
 Independent satellite change detection and construction discovery benchmark executed against real Sentinel-2 L2A European Space Agency (ESA) imagery via Element84 STAC.
@@ -66,6 +81,7 @@ Independent satellite change detection and construction discovery benchmark exec
 | **Search Radius** | `5.0 km` (Approx. 78.5 km² search footprint) |
 | **Pre-Construction Period (Before)** | `2021-01-01` to `2021-03-31` |
 | **Post-Construction Period (After)** | `2025-01-01` to `2025-03-31` |
+| **Confirmation Period (Temporal Persistence)** | `2025-10-01` to `2025-12-31` |
 | **Native Spatial Resolution** | `10.0 meters / pixel` |
 | **CRS & Grid** | `{report.crs}` |
 | **Raster Grid Shape** | `{report.raster_shape[0]} x {report.raster_shape[1]} pixels` |
@@ -77,13 +93,13 @@ Independent satellite change detection and construction discovery benchmark exec
 | :--- | :--- | :--- | :--- | :--- |
 | **Before (Pre-Works)** | `{report.before_scene_id}` | `{report.before_acquisition_date}` | `{report.before_cloud_cover_pct:.1f}%` | `> 95%` |
 | **After (Post-Works)** | `{report.after_scene_id}` | `{report.after_acquisition_date}` | `{report.after_cloud_cover_pct:.1f}%` | `> 95%` |
-
+{conf_row}
 ## 3. Honest Surface Area Breakdown
 
 | Area Metric | Extent (Hectares) | Extent (m²) | Notes |
 | :--- | :--- | :--- | :--- |
 | **Raw Detected Change Area** | **`{report.raw_change_area_hectares:,.1f} ha`** | `{report.raw_change_area_m2:,.0f} m²` | All valid pixels with Δ NDVI < -0.15 |
-| **Classified Construction** | **`{report.classified_construction_area_hectares:,.1f} ha`** | `{report.classified_construction_area_hectares * 10000:,.0f} m²` | Sum of candidate polygons classified as infrastructure |
+{pers_row}| **Classified Construction** | **`{report.classified_construction_area_hectares:,.1f} ha`** | `{report.classified_construction_area_hectares * 10000:,.0f} m²` | Sum of candidate polygons classified as infrastructure |
 | **Classified Agriculture / Other** | **`{report.classified_agricultural_area_hectares + report.classified_other_area_hectares:,.1f} ha`** | `{(report.classified_agricultural_area_hectares + report.classified_other_area_hectares) * 10000:,.0f} m²` | Seasonal crop clearing or ambiguous spectral loss |
 | **Candidate Polygons Count** | **`{report.candidates_count}` zones** | — | Discrete contiguous clusters >= 5,000 m² |
 
@@ -91,7 +107,7 @@ Independent satellite change detection and construction discovery benchmark exec
 
 | Taxonomy Category | Count | Description |
 | :--- | :--- | :--- |
-| `CONSTRUCTION` | **{breakdown.get('CONSTRUCTION', 0)}** | Runways, taxiways, aprons, terminal foundation, and Yamuna Expressway interchange earthworks |
+| `CONSTRUCTION` | **{breakdown.get('CONSTRUCTION', 0)}** | Permanent infrastructure, runways, buildings, roads, and civil earthworks |
 | `AGRICULTURAL_HARVEST` | **{breakdown.get('AGRICULTURAL_HARVEST', 0)}** | Seasonal crop harvesting / regular field boundary clearing |
 | `WATER_BODY` | **{breakdown.get('WATER_BODY', 0)}** | Drainage ponds, retention basins, or canal alterations |
 | `CLOUD_OR_ARTIFACT` | **{breakdown.get('CLOUD_OR_ARTIFACT', 0)}** | Sensor noise or unmasked haze |
@@ -99,7 +115,7 @@ Independent satellite change detection and construction discovery benchmark exec
 
 ## 5. Top Identified Candidate Infrastructure Polygons
 
-| Candidate ID | Area (ha) | Centroid (Lat, Lon) | Mean Δ NDVI | Mean Δ BSI | Gemini Interpretation |
+| Candidate ID | Area (ha) | Centroid (Lat, Lon) | Mean Δ NDVI | Mean Δ BSI | Interpretation |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 """
     for c in report.candidates[:10]:
@@ -120,7 +136,7 @@ Independent satellite change detection and construction discovery benchmark exec
 ## 7. Seasonality & Validation Linkage
 
 - **Seasonality Note**: `{report.seasonality_note}`
-- **Ground-Truth Validation**: Correlated against OpenStreetMap in `docs/validation_jewar.md` (80.0% candidate precision, 100% aeroway capture).
+- **Ground-Truth Validation**: Correlated against OpenStreetMap in `docs/validation_jewar.md` (66.71% area precision vs. 26.03% random baseline).
 """
 
     bench_file = root_dir / "docs" / "BENCHMARK_JEWAR.md"
@@ -137,4 +153,3 @@ Independent satellite change detection and construction discovery benchmark exec
 
 if __name__ == "__main__":
     run_benchmark()
-

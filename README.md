@@ -67,8 +67,8 @@ The benchmark below was executed against real Sentinel-2 satellite imagery strea
 | **Raster Grid Extent** | `1020 x 1025 pixels` | Approx. 10.2 km × 10.25 km area |
 | **Raw Detected Change Area** | **`2,169.3 ha`** | `21,692,800 m²` with $\Delta \text{NDVI} < -0.15$ |
 | **Total Candidates Formed** | **`15` zones** | Discrete clusters $\ge 5,000\text{ m}²$ |
-| **Candidate 1 (Expressway Interchange)** | `539.80 ha` | $\Delta \text{NDVI}: -0.306$, $\Delta \text{BSI}: +0.128$ |
-| **Candidate 2 (Runway Footprint)** | `109.39 ha` | $\Delta \text{NDVI}: -0.493$, $\Delta \text{BSI}: +0.152$ |
+| **Candidate 1 (CANDIDATE-01)** | `539.80 ha` | $\Delta \text{NDVI}: -0.306$, $\Delta \text{BSI}: +0.128$ |
+| **Candidate 2 (CANDIDATE-02)** | `109.39 ha` | $\Delta \text{NDVI}: -0.493$, $\Delta \text{BSI}: +0.152$ |
 | **OpenStreetMap Aeroway Overlap** | **`100.0%` (17/17)** | All known airport aeroway features intercepted |
 | **Candidate Precision vs OSM** | **`80.0%` (12/15)** | Candidates directly overlapping verified infrastructure |
 | **Pipeline Processing Runtime** | **`138.9 seconds`** | End-to-end STAC read, spectral analysis, vectorization |

@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -37,6 +39,22 @@ def encode_image_base64(image_path: str | Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    """Determine if an exception represents a 429 / ResourceExhausted rate limit."""
+    msg = str(e).lower()
+    return any(
+        k in msg
+        for k in [
+            "429",
+            "resource_exhausted",
+            "quota",
+            "rate limit",
+            "too many requests",
+            "exceeded your current quota",
+        ]
+    )
+
+
 class GeminiVerificationClient:
     """Client for Gemini text extraction and multimodal vision analysis."""
 
@@ -51,6 +69,40 @@ class GeminiVerificationClient:
             self.api_key = None
 
         self.model_name = model_name or settings.GEMINI_MODEL or "gemini-2.5-flash"
+
+    def _invoke_with_retry(self, llm, messages, max_retries: int = 3, initial_delay: float = 2.0):
+        """Invoke LLM synchronously with exponential backoff on 429 / ResourceExhausted."""
+        delay = initial_delay
+        for attempt in range(max_retries + 1):
+            try:
+                return llm.invoke(messages)
+            except Exception as e:
+                if _is_rate_limit(e) and attempt < max_retries:
+                    logger.warning(
+                        f"Gemini API rate limit hit (attempt {attempt + 1}/{max_retries}). "
+                        f"Backing off for {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+                    delay *= 2.0
+                else:
+                    raise e
+
+    async def _ainvoke_with_retry(self, llm, messages, max_retries: int = 3, initial_delay: float = 2.0):
+        """Invoke LLM asynchronously with exponential backoff on 429 / ResourceExhausted."""
+        delay = initial_delay
+        for attempt in range(max_retries + 1):
+            try:
+                return await llm.ainvoke(messages)
+            except Exception as e:
+                if _is_rate_limit(e) and attempt < max_retries:
+                    logger.warning(
+                        f"Gemini API rate limit hit (attempt {attempt + 1}/{max_retries}). "
+                        f"Backing off for {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2.0
+                else:
+                    raise e
 
     def _get_llm(self, structured_schema: type | None = None):
         """Instantiate ChatGoogleGenerativeAI model."""
@@ -86,7 +138,7 @@ class GeminiVerificationClient:
         ]
 
         try:
-            result = await llm.ainvoke(messages)
+            result = await self._ainvoke_with_retry(llm, messages)
             if isinstance(result, ExtractedProjectInfo):
                 extracted = result
             elif isinstance(result, dict):
@@ -230,7 +282,7 @@ Return structured findings for every claim according to the system instructions.
         ]
 
         try:
-            result = await llm.ainvoke(messages)
+            result = await self._ainvoke_with_retry(llm, messages)
             audit.api_call_status = "SUCCESS"
             audit.parsed_response_status = "SUCCESS"
             audit.vision_actually_executed = True
@@ -248,11 +300,12 @@ Return structured findings for every claim according to the system instructions.
             out.vision_audit = audit
             return out
         except Exception as e:
+            is_quota = _is_rate_limit(e)
             err_msg = f"Gemini multimodal satellite analysis failed: {e}"
             logger.warning(err_msg)
             audit.api_call_status = "FAILED"
-            audit.error_message = str(e)
-            audit.parsed_response_status = "VISION_NOT_EXECUTED"
+            audit.error_message = f"Gemini API Quota Exhausted (HTTP 429): {e}" if is_quota else str(e)
+            audit.parsed_response_status = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
 
             # Strict requirement: NEVER replace a failed vision call with generic successful-looking reasoning
@@ -261,14 +314,18 @@ Return structured findings for every claim according to the system instructions.
                     claim=c.get("activity", ""),
                     observed_changes=[],
                     supports_claim=None,
-                    reasoning=f"VISION_NOT_EXECUTED: API call failed ({e}).",
-                    limitations=["Vision analysis failed; physical inspection required."],
+                    reasoning=(
+                        f"QUOTA_EXHAUSTED: Gemini API rate limit reached (HTTP 429)."
+                        if is_quota
+                        else f"VISION_NOT_EXECUTED: API call failed ({e})."
+                    ),
+                    limitations=["Vision analysis failed / rate limited; physical inspection required."],
                 )
                 for c in claims
             ]
             return VisionAnalysisOutput(
                 findings=failed_findings,
-                general_observations=f"Vision model execution failed: {e}",
+                general_observations=audit.error_message,
                 vision_audit=audit,
             )
 
@@ -400,7 +457,7 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
         ]
 
         try:
-            resp = llm.invoke(messages)
+            resp = self._invoke_with_retry(llm, messages)
             if isinstance(resp, DiscoveryVisionStructuredOutput):
                 structured = resp
             elif isinstance(resp, dict):
@@ -449,15 +506,16 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
                 "audit": audit,
             }
         except Exception as e:
+            is_quota = _is_rate_limit(e)
             err_msg = f"Gemini discovery vision call failed: {e}"
             logger.error(err_msg)
             audit.api_call_status = "FAILED"
-            audit.error_message = str(e)
-            audit.parsed_response_status = "VISION_NOT_EXECUTED"
+            audit.error_message = f"Gemini API Quota Exhausted (HTTP 429): {e}" if is_quota else str(e)
+            audit.parsed_response_status = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
             return {
-                "summary": f"VISION_NOT_EXECUTED: {err_msg}",
-                "executive_summary": f"VISION_NOT_EXECUTED: {err_msg}",
+                "summary": f"{audit.parsed_response_status}: {audit.error_message}",
+                "overall_summary": f"{audit.parsed_response_status}: {audit.error_message}",
                 "findings": [],
                 "candidate_interpretations": {},
                 "audit": audit,
@@ -549,7 +607,7 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
                     for c in claims
                 ]
 
-            resp = await llm.ainvoke(messages)
+            resp = await self._ainvoke_with_retry(llm, messages)
             if isinstance(resp, DroneAnalysisOutput):
                 parsed_findings = resp.findings
             elif isinstance(resp, dict):
@@ -578,14 +636,16 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             return final_findings
 
         except Exception as e:
+            is_quota = _is_rate_limit(e)
             logger.error(f"Drone vision analysis failed: {e}")
+            tag = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
             return [
                 DroneVerificationFinding(
                     claim=c.get("activity", "Unknown"),
                     observations=[],
-                    supports_claim="VISION_NOT_EXECUTED",
-                    reasoning=f"VISION_NOT_EXECUTED: Inspection vision model failed ({e}).",
-                    limitations=["Vision API call error."],
+                    supports_claim=tag,
+                    reasoning=f"{tag}: Inspection vision model failed ({e}).",
+                    limitations=["Vision API rate limit or execution error."],
                 )
                 for c in claims
             ]

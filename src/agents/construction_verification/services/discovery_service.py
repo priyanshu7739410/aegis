@@ -198,6 +198,7 @@ class ConstructionDiscoveryService:
         max_cloud_cover: float = 20.0,
         area_name: str = "Independent Site Discovery",
         discovery_id: str | None = None,
+        progress_callback: Any = None,
     ) -> DiscoveryReport:
         """Execute independent construction discovery without requiring any contractor document or pre-existing claims."""
         disc_id = discovery_id or f"DISC-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
@@ -205,6 +206,8 @@ class ConstructionDiscoveryService:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Starting Construction Discovery {disc_id} at ({latitude}, {longitude}), radius={radius_km}km")
+        if progress_callback:
+            progress_callback(10, f"Validating coordinates for {area_name}...")
 
         # 1. Validate area & calculate bounding box
         if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
@@ -214,6 +217,8 @@ class ConstructionDiscoveryService:
         retrieval_attempts: list[dict[str, Any]] = []
 
         # 2. Retrieve before and after satellite scenes with STAC retry and ROI quality filtering
+        if progress_callback:
+            progress_callback(25, "Searching Element84 STAC for pre-construction Sentinel-2 scenes...")
         before_scene = self._find_qualifying_scene(
             bbox=bbox,
             date_start=before_date_start,
@@ -222,6 +227,8 @@ class ConstructionDiscoveryService:
             period_label="before",
             retrieval_attempts=retrieval_attempts,
         )
+        if progress_callback:
+            progress_callback(40, "Searching Element84 STAC for post-construction Sentinel-2 scenes...")
         after_scene = self._find_qualifying_scene(
             bbox=bbox,
             date_start=after_date_start,
@@ -233,6 +240,8 @@ class ConstructionDiscoveryService:
 
         confirmation_scene = None
         if confirmation_date_start and confirmation_date_end:
+            if progress_callback:
+                progress_callback(50, "Searching for confirmation Sentinel-2 scene (temporal persistence)...")
             try:
                 confirmation_scene = self._find_qualifying_scene(
                     bbox=bbox,
@@ -246,9 +255,13 @@ class ConstructionDiscoveryService:
                 logger.warning(f"Confirmation scene retrieval failed: {e}")
 
         # 3. Preprocess and align multi-spectral bands
+        if progress_callback:
+            progress_callback(60, "Streaming Sentinel-2 COG rasters and computing SCL cloud masks...")
         aligned_data = self._read_and_align_rasters(bbox, before_scene, after_scene, confirmation_scene=confirmation_scene)
 
         # 4. Detect candidate changes and evaluate temporal persistence
+        if progress_callback:
+            progress_callback(75, "Computing NDVI/BSI difference matrices & vectorizing change clusters...")
         detection_result = self._detect_changes(
             aligned_data=aligned_data,
             bbox_wgs84=bbox,
@@ -260,6 +273,8 @@ class ConstructionDiscoveryService:
         total_disturbed_area_m2 = detection_result["total_disturbed_area_m2"]
 
         # 5. Multimodal Gemini Vision analysis
+        if progress_callback:
+            progress_callback(85, "Analyzing candidate changes with Gemini Multimodal Vision...")
         scene_metadata = {
             "before_scene_id": before_scene["scene_id"],
             "after_scene_id": after_scene["scene_id"],
@@ -446,6 +461,9 @@ class ConstructionDiscoveryService:
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(report.model_dump_json(indent=2))
 
+        if progress_callback:
+            progress_callback(100, f"Discovery completed. Found {len(candidate_objects)} candidate zones.")
+
         logger.info(f"Construction Discovery {disc_id} complete. Detected {len(candidate_objects)} candidate polygons.")
         return report
 
@@ -524,15 +542,23 @@ class ConstructionDiscoveryService:
                 "transform": win_transform,
             }
 
-        def read_asset(url: str, target_shape=None, resampling=Resampling.bilinear):
-            with rasterio.open(url) as src:
-                nb = transform_bounds("EPSG:4326", src.crs, *bbox_wgs84)
-                win = from_bounds(*nb, transform=src.transform)
-                if target_shape:
-                    data = src.read(1, window=win, out_shape=target_shape, resampling=resampling, boundless=True)
-                else:
-                    data = src.read(1, window=win, boundless=True)
-                return data.astype(np.float32), src.crs, rasterio.windows.transform(win, src.transform)
+        def read_asset(url: str, target_shape=None, resampling=Resampling.bilinear, max_retries: int = 3):
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    with rasterio.open(url) as src:
+                        nb = transform_bounds("EPSG:4326", src.crs, *bbox_wgs84)
+                        win = from_bounds(*nb, transform=src.transform)
+                        if target_shape:
+                            data = src.read(1, window=win, out_shape=target_shape, resampling=resampling, boundless=True)
+                        else:
+                            data = src.read(1, window=win, boundless=True)
+                        return data.astype(np.float32), src.crs, rasterio.windows.transform(win, src.transform)
+                except Exception as e:
+                    last_err = e
+                    logger.warning(f"S3 raster read failed for {url} (attempt {attempt + 1}/{max_retries}): {e}. Retrying...")
+                    time.sleep(2.0)
+            raise last_err
 
         with rasterio.Env(AWS_NO_SIGN_REQUEST="YES", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", VSI_CACHE=True):
             r1, crs_obj, win_transform = read_asset(b_assets["red"])
