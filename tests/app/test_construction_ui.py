@@ -5,12 +5,22 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import numpy as np
 from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from agents.construction_verification import case_workflow as cw
+from agents.construction_verification.schemas import (
+    ConstructionClaim,
+    ExtractedProjectInfo,
+    LocationInfo,
+)
+from agents.construction_verification.services.earth_search import EarthSearchClient
+from agents.construction_verification.services.gemini_client import GeminiVerificationClient
+from agents.construction_verification.services.ocr_client import OCRClient
+from agents.construction_verification.services.raster_processing import RasterProcessor
 import pytest
 from unittest.mock import MagicMock
 import streamlit as st
@@ -364,3 +374,116 @@ def test_app_import_excludes_unrelated_components(tmp_path):
     )
     assert result.returncode == 0, result.stderr[-3000:]
     assert "OK" in result.stdout
+
+
+def test_upload_widget_renders(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        at.run()
+    assert len(at.get("file_uploader")) == 1
+
+
+def test_five_stages_driven_through_the_ui_with_mocked_services(tmp_path):
+    def click(label):
+        next(b for b in at.button if b.label == label).click()
+        at.run()
+        assert not at.exception, at.exception
+
+    def field(label):
+        return next(i for i in at.text_input if i.label == label)
+
+    extracted = ExtractedProjectInfo(
+        project_name="Ring Road",
+        contractor="Acme Ltd",
+        location=LocationInfo(latitude=13.05, longitude=80.25),
+        start_date="2024-01-10",
+        completion_date="2024-06-20",
+        claims=[ConstructionClaim(activity="Road surfacing")],
+    )
+
+    def scene(scene_id, date):
+        bands = ("red", "green", "blue", "nir", "scl", "swir16")
+        return {
+            "scene_id": scene_id,
+            "acquisition_date": date,
+            "cloud_cover_percent": 3.0,
+            "asset_urls": {b: f"https://stac-fixture.invalid/{scene_id}/{b}.tif" for b in bands},
+        }
+
+    def read_band(self, url, bbox, target_shape=None, grid=None, resampling=None):
+        before = "BEFORE" in url
+        band = url.rsplit("/", 1)[-1].split(".")[0]
+        value = {
+            "nir": 3000.0 if before else 1500.0,
+            "red": 1000.0 if before else 1500.0,
+            "scl": 4,
+        }.get(band, 700.0)
+        return np.full(grid.shape, value, dtype=np.float32), grid.transform
+
+    vision = {
+        "findings": [
+            {
+                "claim": "Road surfacing",
+                "status": "SUPPORTED",
+                "visual_observations": ["Fixture corridor"],
+                "reasoning": "Fixture reasoning",
+                "limitations": ["Fixture limitation"],
+                "recommended_follow_up": "Fixture follow-up",
+            }
+        ],
+        "general_observations": "Fixture observation",
+    }
+
+    at, settings_patch = _app(tmp_path, fake_model=False)
+    with (
+        settings_patch,
+        patch.object(OCRClient, "_call_ocr_space", AsyncMock(return_value="Fixture OCR text")) as ocr,
+        patch.object(
+            GeminiVerificationClient,
+            "_ainvoke_with_fallback",
+            AsyncMock(side_effect=[(extracted, "m"), (vision, "m")]),
+        ) as gemini,
+        patch.object(
+            EarthSearchClient,
+            "find_best_scene",
+            side_effect=[scene("S2_BEFORE", "2024-01-05"), scene("S2_AFTER", "2024-06-25")],
+        ) as stac,
+        patch.object(RasterProcessor, "read_window_band", read_band),
+    ):
+        case = cw.new_case()
+        cw.attach_document(case, "claim.png", _png())
+        at.session_state["case"] = case
+        at.run()
+
+        click("Extract text")
+        assert at.session_state["case"]["extracted_text"] == "Fixture OCR text"
+
+        click("Extract details with Gemini")
+        assert field("Project name").value == "Ring Road"
+        assert field("Latitude (decimal degrees)").value == "13.05"
+
+        field("Latitude (decimal degrees)").set_value("13.06")
+        click("Confirm details")
+        assert at.session_state["case"]["construction_location"]["latitude"] == 13.06
+
+        click("Find Sentinel-2 scenes")
+        assert stac.call_args_list[0].kwargs["bbox"] == [80.245, 13.055, 80.255, 13.065]
+
+        click("Analyze claims")
+        assert at.session_state["case"]["verification_results"][0]["status"] == "SUPPORTED"
+        assert any(e.label == "SUPPORTED: Road surfacing" for e in at.expander)
+        assert not any("SYNTHETIC" in e.value for e in at.error)
+
+        next(s for s in at.selectbox if s.label == "Decision").select("APPROVE")
+        field("Officer identifier").set_value("OFF-1")
+        next(a for a in at.text_area if a.label == "Justification").set_value("Reviewed evidence")
+        click("Record decision")
+
+        at.run()
+        at.run()
+
+    assert ocr.await_count == 1 and gemini.await_count == 2 and stac.call_count == 2
+    state = at.session_state["case"]
+    assert state["officer_decision"]["decision"] == "APPROVE"
+    assert state["report"]["officer_decision"] is None
+    assert state["report"]["evidence_mode"] == "LIVE_SERVICES"
