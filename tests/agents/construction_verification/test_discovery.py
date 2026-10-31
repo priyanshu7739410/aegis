@@ -40,7 +40,14 @@ def test_discovery_does_not_reuse_contractor_case(tmp_path):
         "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
     }
 
-    with patch.object(service.earth_search, "search_scene", side_effect=[mock_b_scene, mock_a_scene]):
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scene", side_effect=[mock_b_scene, mock_a_scene]), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
         report = service.run_discovery(
             latitude=28.17,
             longitude=77.61,
@@ -209,7 +216,14 @@ def test_output_includes_provenance_and_geojson_polygons(tmp_path):
     mock_b = {"scene_id": "S2A_TEST_BEFORE", "acquisition_date": "2021-03-20", "cloud_cover_percent": 1.5, "asset_urls": {"red": "mock://r.tif"}}
     mock_a = {"scene_id": "S2B_TEST_AFTER", "acquisition_date": "2025-03-24", "cloud_cover_percent": 0.2, "asset_urls": {"red": "mock://r.tif"}}
 
-    with patch.object(service.earth_search, "search_scene", side_effect=[mock_b, mock_a]):
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scene", side_effect=[mock_b, mock_a]), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
         report = service.run_discovery(latitude=28.17, longitude=77.61, radius_km=5.0)
 
     assert report.before_scene_id == "S2A_TEST_BEFORE"
@@ -458,5 +472,237 @@ def test_discovery_structured_output_api_exception(tmp_path):
     assert res["audit"].vision_actually_executed is False
     assert res["audit"].parsed_response_status == "VISION_NOT_EXECUTED"
     assert res["findings"] == []
+
+
+def test_discovery_scene_retrieval_retry_on_high_roi_invalid(tmp_path):
+    """Task 4: Test STAC retry loop when candidate scene has > 30% invalid pixels in ROI."""
+    service = ConstructionDiscoveryService(output_dir=tmp_path)
+
+    # Before scene: scene 1 has 45% invalid pixels (rejected), scene 2 has 5% (accepted)
+    b_scene_cloudy = {
+        "scene_id": "S2_BEFORE_CLOUDY",
+        "acquisition_date": "2021-01-10",
+        "cloud_cover_percent": 15.0,
+        "mock_roi_invalid_ratio": 0.45,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    b_scene_clear = {
+        "scene_id": "S2_BEFORE_CLEAR",
+        "acquisition_date": "2021-02-15",
+        "cloud_cover_percent": 2.0,
+        "mock_roi_invalid_ratio": 0.05,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    a_scene = {
+        "scene_id": "S2_AFTER_CLEAR",
+        "acquisition_date": "2025-02-15",
+        "cloud_cover_percent": 1.0,
+        "mock_roi_invalid_ratio": 0.02,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+
+    def mock_search_scenes(bbox, datetime_range, max_cloud=30.0, max_items=15):
+        if "2021" in datetime_range:
+            return [b_scene_cloudy, b_scene_clear]
+        return [a_scene]
+
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scenes", side_effect=mock_search_scenes), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
+        report = service.run_discovery(
+            latitude=28.17,
+            longitude=77.61,
+            radius_km=5.0,
+            before_date_start="2021-01-01",
+            before_date_end="2021-03-31",
+            after_date_start="2025-01-01",
+            after_date_end="2025-03-31",
+        )
+
+    # Verify scene 1 was rejected and scene 2 was chosen for the before scene
+    assert report.before_scene_id == "S2_BEFORE_CLEAR"
+    assert len(report.retrieval_attempts) >= 2
+
+    # Check attempt records
+    rejected = next(att for att in report.retrieval_attempts if att["scene_id"] == "S2_BEFORE_CLOUDY")
+    assert rejected["status"] == "REJECTED"
+    assert rejected["roi_invalid_pct"] == 45.0
+    assert "exceeds 30% threshold" in rejected["reason"]
+
+    accepted = next(att for att in report.retrieval_attempts if att["scene_id"] == "S2_BEFORE_CLEAR")
+    assert accepted["status"] == "ACCEPTED"
+
+
+def test_discovery_date_window_expansion_when_no_scene_qualifies(tmp_path):
+    """Task 4: Test that date window expands by +/- 30 days if no scene qualifies initially."""
+    service = ConstructionDiscoveryService(output_dir=tmp_path)
+
+    narrow_scene = {
+        "scene_id": "S2_BEFORE_NARROW_CLOUDY",
+        "acquisition_date": "2021-01-15",
+        "cloud_cover_percent": 18.0,
+        "mock_roi_invalid_ratio": 0.50,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    widened_scene = {
+        "scene_id": "S2_BEFORE_WIDENED_CLEAR",
+        "acquisition_date": "2020-12-15",
+        "cloud_cover_percent": 3.0,
+        "mock_roi_invalid_ratio": 0.04,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    a_scene = {
+        "scene_id": "S2_AFTER_CLEAR",
+        "acquisition_date": "2025-02-15",
+        "cloud_cover_percent": 1.0,
+        "mock_roi_invalid_ratio": 0.02,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+
+    def mock_search_scenes(bbox, datetime_range, max_cloud=30.0, max_items=15):
+        if "2021" in datetime_range and "2020" not in datetime_range:
+            return [narrow_scene]
+        elif "2020" in datetime_range:
+            return [widened_scene]
+        return [a_scene]
+
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scenes", side_effect=mock_search_scenes), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
+        report = service.run_discovery(
+            latitude=28.17,
+            longitude=77.61,
+            radius_km=5.0,
+            before_date_start="2021-01-01",
+            before_date_end="2021-01-31",
+            after_date_start="2025-01-01",
+            after_date_end="2025-01-31",
+        )
+
+    assert report.before_scene_id == "S2_BEFORE_WIDENED_CLEAR"
+    widened_attempt = next(att for att in report.retrieval_attempts if att["scene_id"] == "S2_BEFORE_WIDENED_CLEAR")
+    assert widened_attempt["widened_search_window"] is True
+    assert widened_attempt["status"] == "ACCEPTED"
+
+
+def test_discovery_three_scene_temporal_persistence(tmp_path):
+    """Task 4: Test 3-scene temporal persistence calculation distinguishing seasonal crop from persistent construction."""
+    service = ConstructionDiscoveryService(output_dir=tmp_path)
+
+    b_scene = {
+        "scene_id": "S2_BEFORE",
+        "acquisition_date": "2021-02-01",
+        "cloud_cover_percent": 1.0,
+        "mock_roi_invalid_ratio": 0.01,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    a_scene = {
+        "scene_id": "S2_AFTER",
+        "acquisition_date": "2025-02-01",
+        "cloud_cover_percent": 1.0,
+        "mock_roi_invalid_ratio": 0.01,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    c_scene = {
+        "scene_id": "S2_CONFIRMATION",
+        "acquisition_date": "2025-11-01",
+        "cloud_cover_percent": 1.5,
+        "mock_roi_invalid_ratio": 0.01,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+
+    def mock_search_scenes(bbox, datetime_range, max_cloud=30.0, max_items=15):
+        if "2021" in datetime_range:
+            return [b_scene]
+        elif "2025-10" in datetime_range or "2025-12" in datetime_range:
+            return [c_scene]
+        return [a_scene]
+
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scenes", side_effect=mock_search_scenes), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
+        report = service.run_discovery(
+            latitude=28.17,
+            longitude=77.61,
+            radius_km=5.0,
+            before_date_start="2021-01-01",
+            before_date_end="2021-03-31",
+            after_date_start="2025-01-01",
+            after_date_end="2025-03-31",
+            confirmation_date_start="2025-10-01",
+            confirmation_date_end="2025-12-31",
+        )
+
+    assert report.confirmation_scene_id == "S2_CONFIRMATION"
+    assert report.raw_change_area_m2 > 0
+    assert report.persistent_change_area_m2 is not None
+    assert report.persistent_change_area_m2 > 0
+    assert "3-scene temporal persistence verified" in report.seasonality_note
+
+
+def test_discovery_two_scene_analysis_labels_seasonality_warning(tmp_path):
+    """Task 4: Test that a 2-scene run carries the mandatory seasonality warning label."""
+    service = ConstructionDiscoveryService(output_dir=tmp_path)
+
+    b_scene = {
+        "scene_id": "S2_B",
+        "acquisition_date": "2021-02-01",
+        "cloud_cover_percent": 1.0,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+    a_scene = {
+        "scene_id": "S2_A",
+        "acquisition_date": "2025-02-01",
+        "cloud_cover_percent": 1.0,
+        "asset_urls": {"red": "mock://red.tif", "green": "mock://green.tif", "blue": "mock://blue.tif", "nir": "mock://nir.tif", "scl": "mock://scl.tif"},
+        "properties": {"synthetic": True},
+    }
+
+    mock_vision = {
+        "summary": "Mock vision discovery summary.",
+        "findings": [],
+        "candidate_interpretations": {},
+        "audit": VisionExecutionAudit(api_call_status="SUCCESS", parsed_response_status="SUCCESS", vision_actually_executed=True),
+    }
+
+    with patch.object(service.earth_search, "search_scenes", side_effect=[[b_scene], [a_scene]]), patch.object(service.gemini_client, "analyze_discovery_imagery", return_value=mock_vision):
+        report = service.run_discovery(
+            latitude=28.17,
+            longitude=77.61,
+            radius_km=5.0,
+            before_date_start="2021-01-01",
+            before_date_end="2021-03-31",
+            after_date_start="2025-01-01",
+            after_date_end="2025-03-31",
+        )
+
+    assert report.persistent_change_area_m2 is None
+    assert "2-scene analysis: cannot distinguish permanent construction from seasonal crop cycles" in report.seasonality_note
+
 
 

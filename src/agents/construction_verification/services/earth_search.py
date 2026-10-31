@@ -67,16 +67,17 @@ class EarthSearchClient:
 
         return self.search_scene(bbox=bbox, datetime_range=date_range_str, max_cloud=cloud_thresh)
 
-    def search_scene(
+    def search_scenes(
         self,
         bbox: list[float],
         datetime_range: str,
         max_cloud: float = 30.0,
-    ) -> dict[str, Any] | None:
-        """Query STAC API for a Sentinel-2 scene meeting spatial, temporal, and cloud criteria."""
+        max_items: int = 15,
+    ) -> list[dict[str, Any]]:
+        """Query STAC API for Sentinel-2 scenes meeting spatial, temporal, and cloud criteria."""
         if settings.USE_FAKE_MODEL:
             logger.info("Using synthetic Earth Search scene (USE_FAKE_MODEL=True)")
-            return self._get_synthetic_scene(bbox, datetime_range)
+            return [self._get_synthetic_scene(bbox, datetime_range)]
 
         try:
             client = pystac_client.Client.open(self.endpoint_url)
@@ -86,7 +87,7 @@ class EarthSearchClient:
                 datetime=datetime_range,
                 query={"eo:cloud_cover": {"lt": max_cloud}},
                 sortby=[{"field": "properties.eo:cloud_cover", "direction": "asc"}],
-                max_items=15,
+                max_items=max_items,
             )
 
             items = list(search.items())
@@ -95,9 +96,9 @@ class EarthSearchClient:
                     f"No Sentinel-2 scenes found in collection {self.collection} for bbox {bbox} "
                     f"in range {datetime_range} with cloud < {max_cloud}%"
                 )
-                return None
+                return []
 
-            # Filter items that have required assets and overlap the bbox
+            matched_scenes: list[dict[str, Any]] = []
             bbox_geom = box(*bbox)
             for item in items:
                 # Check geometry intersection
@@ -126,22 +127,32 @@ class EarthSearchClient:
                 if "nir" not in asset_urls and "nir08" in asset_urls:
                     asset_urls["nir"] = asset_urls["nir08"]
 
-                return {
+                matched_scenes.append({
                     "scene_id": item.id,
                     "acquisition_date": item.datetime.strftime("%Y-%m-%d") if item.datetime else datetime_range[:10],
                     "cloud_cover_percent": float(item.properties.get("eo:cloud_cover", 0.0)),
                     "asset_urls": asset_urls,
                     "bbox": item.bbox,
                     "properties": item.properties,
-                }
+                })
 
-            return None
+            return matched_scenes
 
         except Exception as e:
             logger.error(f"Error querying Earth Search STAC: {e}")
             if settings.USE_FAKE_MODEL:
-                return self._get_synthetic_scene(bbox, datetime_range)
+                return [self._get_synthetic_scene(bbox, datetime_range)]
             raise EarthSearchError(f"Failed querying STAC service: {e}") from e
+
+    def search_scene(
+        self,
+        bbox: list[float],
+        datetime_range: str,
+        max_cloud: float = 30.0,
+    ) -> dict[str, Any] | None:
+        """Query STAC API for the single best Sentinel-2 scene meeting criteria."""
+        scenes = self.search_scenes(bbox=bbox, datetime_range=datetime_range, max_cloud=max_cloud)
+        return scenes[0] if scenes else None
 
     def _get_synthetic_scene(self, bbox: list[float], datetime_range: str) -> dict[str, Any]:
         """Generate deterministic synthetic scene for offline testing/verification."""

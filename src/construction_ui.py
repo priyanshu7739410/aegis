@@ -364,6 +364,14 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
 
             min_area_val = st.slider("Minimum Candidate Change Area (m²)", min_value=1000, max_value=50000, value=5000, step=1000, help="Filters out small noise clusters. 10,000 m² = 1 hectare.")
 
+            with st.expander("🌱 Optional: 3-Scene Multi-Temporal Confirmation (Seasonality Filter)", expanded=False):
+                st.caption("Provide a confirmation period 3–12 months after the post-construction date to verify persistence and filter seasonal crop harvesting.")
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    c_start = st.text_input("Confirmation Start Date (Optional)", value="", placeholder="e.g. 2025-10-01")
+                with col_c2:
+                    c_end = st.text_input("Confirmation End Date (Optional)", value="", placeholder="e.g. 2025-12-31")
+
             if st.button("🚀 Run Independent Construction Discovery", type="primary", use_container_width=True):
                 with st.spinner("Searching Sentinel-2 STAC, aligning spectral bands, vectorizing change polygons, and executing Gemini Vision..."):
                     try:
@@ -376,6 +384,8 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                             before_date_end=b_end,
                             after_date_start=a_start,
                             after_date_end=a_end,
+                            confirmation_date_start=c_start.strip() if c_start.strip() else None,
+                            confirmation_date_end=c_end.strip() if c_end.strip() else None,
                             min_change_area_m2=float(min_area_val),
                             area_name=area_name_in,
                         )
@@ -396,10 +406,32 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
 
                 # Metrics summary
                 km1, km2, km3, km4 = st.columns(4)
-                km1.metric("Total Disturbed Land", f"{rep.total_disturbed_area_hectares:,.1f} ha", f"{rep.total_disturbed_area_m2:,.0f} m²")
-                km2.metric("Candidate Polygons", f"{rep.candidates_count} clusters", ">= min mapping area")
-                km3.metric("Before Scene", rep.before_acquisition_date, f"Cloud: {rep.before_cloud_cover_pct:.1f}%")
-                km4.metric("After Scene", rep.after_acquisition_date, f"Cloud: {rep.after_cloud_cover_pct:.1f}%")
+                km1.metric(
+                    "Raw Detected Change",
+                    f"{rep.raw_change_area_hectares:,.1f} ha",
+                    f"{rep.raw_change_area_m2:,.0f} m² spectral change",
+                )
+                if rep.persistent_change_area_hectares is not None:
+                    km2.metric(
+                        "Persistent Change Area",
+                        f"{rep.persistent_change_area_hectares:,.1f} ha",
+                        f"Seasonal: {round(rep.seasonal_vegetation_area_m2 / 10000.0, 1) if rep.seasonal_vegetation_area_m2 else 0.0} ha",
+                    )
+                else:
+                    km2.metric(
+                        "Persistent Change Area",
+                        "N/A (2-Scene)",
+                        "Requires 3-scene confirmation",
+                    )
+                km3.metric("Candidate Zones", f"{rep.candidates_count} clusters", ">= min mapping area")
+                km4.metric("Native Resolution", f"{rep.resolution_m:.0f} m/pixel", "Sentinel-2 L2A")
+
+                # Seasonality Advisory Banner
+                if rep.seasonality_note:
+                    if "2-scene analysis" in rep.seasonality_note:
+                        st.warning(f"⚠️ **Seasonality Advisory**: {rep.seasonality_note}")
+                    else:
+                        st.success(f"🌱 **Multi-Temporal Persistence**: {rep.seasonality_note}")
 
                 # Proof of Real Vision Execution Audit Banner
                 if audit.vision_actually_executed:
@@ -494,6 +526,9 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                         "discovery_id": rep.discovery_id,
                         "before_scene_id": rep.before_scene_id,
                         "after_scene_id": rep.after_scene_id,
+                        "confirmation_scene_id": rep.confirmation_scene_id,
+                        "seasonality_note": rep.seasonality_note,
+                        "retrieval_attempts": rep.retrieval_attempts,
                         "crs": rep.crs,
                         "raster_shape": rep.raster_shape,
                         "resolution_m": rep.resolution_m,

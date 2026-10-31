@@ -270,6 +270,16 @@ class DiscoveryReport(BaseModel):
     resolution_m: float
     total_disturbed_area_m2: float
     total_disturbed_area_hectares: float
+    raw_change_area_m2: float = 0.0
+    raw_change_area_hectares: float = 0.0
+    persistent_change_area_m2: float | None = None
+    persistent_change_area_hectares: float | None = None
+    seasonal_vegetation_area_m2: float | None = None
+    confirmation_scene_id: str | None = None
+    confirmation_acquisition_date: str | None = None
+    confirmation_cloud_cover_pct: float | None = None
+    seasonality_note: str = "2-scene analysis: cannot distinguish permanent construction from seasonal crop cycles without a confirmation scene. Use caution with agricultural areas."
+    retrieval_attempts: list[dict[str, Any]] = Field(default_factory=list)
     candidates_count: int
     candidates: list[DiscoveryCandidate] = Field(default_factory=list)
     gemini_vision_summary: str
