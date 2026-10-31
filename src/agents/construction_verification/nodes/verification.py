@@ -58,7 +58,7 @@ def _evidence_limitations(
             limitations.append("Bare Soil Index was not computed because a SWIR band was unavailable.")
     if not vision_executed:
         audit_error = (state.get("vision_audit") or {}).get("error_message")
-        limitations.append(f"Gemini Vision did not assess the imagery. {audit_error or ''}".strip())
+        limitations.append(f"The vision model did not assess the imagery. {audit_error or ''}".strip())
     return limitations
 
 
@@ -101,7 +101,7 @@ async def verification_node(
             status = VerificationStatus.VISION_NOT_EXECUTED
             obs = []
             reason = (finding or {}).get("reasoning") or (
-                "VISION_NOT_EXECUTED: Gemini Vision did not assess this claim."
+                "VISION_NOT_EXECUTED: The vision model did not assess this claim."
             )
             limits = (finding or {}).get("limitations") or ["Image analysis did not run."]
             action = "Vision analysis not executed. Re-run the analysis or arrange a physical inspection."
@@ -121,7 +121,7 @@ async def verification_node(
         else:
             status = VerificationStatus.INSUFFICIENT_EVIDENCE
             obs = []
-            reason = "Gemini Vision returned no finding for this claim."
+            reason = "The vision model returned no finding for this claim."
             limits = [RESOLUTION_LIMITATION]
             action = "Arrange an on-site inspection."
             requires_drone = True

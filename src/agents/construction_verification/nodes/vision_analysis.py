@@ -71,7 +71,7 @@ async def vision_analysis_node(
         }
 
     except Exception as e:
-        err = f"Gemini Vision analysis error: {e}"
+        err = f"Vision analysis error: {e}"
         logger.error(err)
         return {
             "errors": errors + [err],

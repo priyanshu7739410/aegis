@@ -30,7 +30,7 @@ async def extract_claims_node(
     try:
         info = await gemini_client.extract_project_info(extracted_text)
     except GeminiExtractionError as e:
-        err = f"Gemini extraction failed: {e}"
+        err = f"Model extraction failed: {e}"
         logger.error(err)
         return {
             "errors": errors + [err],

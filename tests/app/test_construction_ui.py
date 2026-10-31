@@ -269,7 +269,7 @@ def test_analysis_and_report_stages_render_labelled_test_data(tmp_path):
     assert "NDVI change" in _labels(at.metric)
     subheaders = [s.value for s in at.subheader]
     for section in ("Project", "Satellite provenance", "Spectral change",
-                    "Gemini findings by claim", "Evidence limitations", "Officer decision"):
+                    "AI findings by claim", "Evidence limitations", "Officer decision"):
         assert section in subheaders
     assert any(e.label.startswith("VISION_NOT_EXECUTED") for e in at.expander)
 
@@ -458,7 +458,7 @@ def test_five_stages_driven_through_the_ui_with_mocked_services(tmp_path):
         click("Extract text")
         assert at.session_state["case"]["extracted_text"] == "Fixture OCR text"
 
-        click("Extract details with Gemini")
+        click("Extract details with AI")
         assert field("Project name").value == "Ring Road"
         assert field("Latitude (decimal degrees)").value == "13.05"
 

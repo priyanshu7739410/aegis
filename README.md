@@ -7,9 +7,9 @@ A dashboard that helps a government officer check a contractor's construction cl
 | Stage | What happens | External service in production |
 | :--- | :--- | :--- |
 | 1. Upload | Accepts PDF, PNG, JPG or JPEG and shows the extracted text. Digital PDFs are read locally. | OCR.space for images and scanned PDFs |
-| 2. Review details | Gemini extracts project name, contractor, type, coordinates, dates, claims and payment amount. The officer corrects and confirms them. | Gemini |
+| 2. Review details | The AI model extracts project name, contractor, type, coordinates, dates, claims and payment amount. The officer corrects and confirms them. | Gemini or Azure |
 | 3. Satellite images | Finds before and after Sentinel-2 L2A scenes and shows scene IDs, dates and cloud cover. | Element84 Earth Search STAC |
-| 4. Analyze claims | Rasterio and NumPy compute NDVI and BSI. Gemini Vision assesses each claim from the two images. | AWS S3 imagery, Gemini Vision |
+| 4. Analyze claims | Rasterio and NumPy compute NDVI and BSI. The vision model assesses each claim from the two images. | AWS S3 imagery, Gemini or Azure |
 | 5. Report and decision | Shows all evidence and limitations. The officer records APPROVE, REJECT, REQUEST_INSPECTION or HOLD. | None |
 
 ## Architecture
@@ -20,11 +20,11 @@ flowchart TD
     WF["case_workflow.py<br/>stage gates, invalidation, persistence"]
     UI --> WF
     WF --> OCR["ocr node"] --> OCRS["OCR.space or local PDF text"]
-    WF --> EX["extract_claims node"] --> GEM["Gemini structured output"]
+    WF --> EX["extract_claims node"] --> GEM["Gemini or Azure structured output"]
     WF --> REVIEW["Officer review"]
     WF --> SEARCH["satellite_search node"] --> STAC["Earth Search STAC"]
     WF --> RASTER["satellite_analysis node"] --> S3["Sentinel-2 COGs on AWS S3"]
-    WF --> VISION["vision_analysis node"] --> GEMV["Gemini Vision"]
+    WF --> VISION["vision_analysis node"] --> GEMV["Gemini or Azure vision"]
     WF --> REPORT["verification node"] --> RF["outputs/construction/reports"]
     WF --> DECISION["Officer decision"] --> DF["outputs/construction/decisions"]
 ```
@@ -38,7 +38,10 @@ Dependencies must already be installed in `.venv`. Copy `.env.example` to `.env`
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
 | `USE_FAKE_MODEL` | Yes | Must be `false` for real use. `true` produces only labelled synthetic test data. |
-| `GEMINI_API_KEY` | Yes | Extraction and vision |
+| `CONSTRUCTION_LLM_PROVIDER` | No | `gemini` (default) or `azure` |
+| `GEMINI_API_KEY` | For Gemini | Extraction and vision |
+| `CONSTRUCTION_AZURE_API_KEY`, `CONSTRUCTION_AZURE_ENDPOINT`, `CONSTRUCTION_AZURE_DEPLOYMENT` | For Azure | Extraction and vision |
+| `CONSTRUCTION_AZURE_VISION_DEPLOYMENT` | No | Separate Azure deployment for vision |
 | `OCR_API_KEY` | For images and scanned PDFs | OCR.space |
 | `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL` | No | Model selection |
 | `EARTH_SEARCH_URL`, `EARTH_SEARCH_COLLECTION`, `MAX_CLOUD_COVER` | No | Scene search |
@@ -85,6 +88,7 @@ uv run --offline --no-sync python tests/run_app_offline.py --server.port 8599
 **Not tested live during the rescue work.** No request was sent to any of these services:
 
 - Gemini extraction and Gemini Vision, including whether the configured model accepts the schema.
+- Azure extraction and vision, including whether a deployment supports images and tool calling.
 - OCR.space, Earth Search STAC, and Sentinel-2 imagery on AWS S3.
 
 An authorized user should run one known case through the app and check the results before relying on it.

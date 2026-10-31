@@ -1,6 +1,6 @@
 from enum import StrEnum
 from json import loads
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from dotenv import find_dotenv
 from pydantic import (
@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: SecretStr | None = None
     GEMINI_MODEL: str = "gemini-3.8-flash"
     GEMINI_FALLBACK_MODEL: str = "gemini-2.5-pro"
+    CONSTRUCTION_LLM_PROVIDER: Literal["gemini", "azure"] = "gemini"
+    # Separate from AZURE_OPENAI_*, which also enables the toolkit's Azure catalog and its
+    # required deployment map.
+    CONSTRUCTION_AZURE_API_KEY: SecretStr | None = None
+    CONSTRUCTION_AZURE_ENDPOINT: str | None = None
+    CONSTRUCTION_AZURE_DEPLOYMENT: str | None = None
+    CONSTRUCTION_AZURE_VISION_DEPLOYMENT: str | None = None
+    CONSTRUCTION_AZURE_API_VERSION: str = "2024-10-21"
     EARTH_SEARCH_URL: str = "https://earth-search.aws.element84.com/v1"
     EARTH_SEARCH_COLLECTION: str = "sentinel-2-l2a"
     MAX_CLOUD_COVER: float = 30.0

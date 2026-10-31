@@ -12,7 +12,12 @@ import socket
 
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost", ""}
 _DEAD_PROXY = "http://127.0.0.1:9"
-_CREDENTIAL_VARS = ("OCR_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+_CREDENTIAL_VARS = (
+    "OCR_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "CONSTRUCTION_AZURE_API_KEY",
+)
 
 blocked_attempts: list[str] = []
 session_log: list[str] = []
@@ -62,6 +67,7 @@ def sanitize_environment() -> None:
     for name in ("NO_PROXY", "no_proxy"):
         os.environ[name] = "localhost,127.0.0.1,::1"
     os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+    os.environ["CONSTRUCTION_LLM_PROVIDER"] = "gemini"
 
 
 def install() -> None:

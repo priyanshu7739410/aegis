@@ -103,7 +103,7 @@ def _render_review(case: dict[str, Any]) -> None:
 
     ran = stage_complete(case, "extract")
     if st.button(
-        "Re-run Gemini extraction (discards edits)" if ran else "Extract details with Gemini",
+        "Re-run AI extraction (discards edits)" if ran else "Extract details with AI",
         type="secondary" if ran else "primary",
         disabled=bool(case.get("officer_decision")),
     ):
@@ -243,11 +243,11 @@ def _render_analysis(case: dict[str, Any]) -> None:
     done = stage_complete(case, "analyze")
     attempted = bool(case.get("vision_audit"))
     if st.button(
-        "Re-run analysis" if done else ("Retry Gemini Vision" if attempted else "Analyze claims"),
+        "Re-run analysis" if done else ("Retry vision analysis" if attempted else "Analyze claims"),
         type="secondary" if done else "primary",
         disabled=bool(case.get("officer_decision")),
     ):
-        _run(case, "analyze", "Computing spectral change and running Gemini Vision...", force=done)
+        _run(case, "analyze", "Computing spectral change and running vision analysis...", force=done)
 
     _show_errors(case, "analyze")
     if case.get("satellite_error"):
@@ -259,7 +259,7 @@ def _render_analysis(case: dict[str, Any]) -> None:
     if case.get("verification_results"):
         audit = case.get("vision_audit") or {}
         if not audit.get("vision_actually_executed"):
-            st.error(f"VISION_NOT_EXECUTED: {audit.get('error_message') or 'Gemini did not run.'}")
+            st.error(f"VISION_NOT_EXECUTED: {audit.get('error_message') or 'The vision model did not run.'}")
         st.dataframe(
             [
                 {"Claim": r["claim"], "Status": r["status"]}
@@ -317,7 +317,9 @@ def _render_report_body(case: dict[str, Any], report: dict[str, Any]) -> None:
     else:
         st.warning("No spectral measurements are available for this report.")
 
-    st.subheader("Gemini findings by claim")
+    st.subheader("AI findings by claim")
+    model_used = (report.get("vision_audit") or {}).get("model_used")
+    st.caption(f"Vision model: {model_used or 'none, vision did not run'}")
     for result in report.get("claims_summary") or []:
         with st.expander(f"{result['status']}: {result['claim']}", expanded=True):
             for observation in result.get("observations") or []:

@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import json
 import logging
 import re
 import time
@@ -8,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import AzureChatOpenAI
 
 from core.settings import settings
 from agents.construction_verification.prompts import (
@@ -32,6 +32,8 @@ from agents.construction_verification.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+AZURE_TIMEOUT_SECONDS = 120.0
 
 
 def encode_image_base64(image_path: str | Path) -> str:
@@ -81,6 +83,12 @@ class GeminiVerificationClient:
     """Client for Gemini text extraction and multimodal vision analysis."""
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None):
+        self.provider = settings.CONSTRUCTION_LLM_PROVIDER
+        if self.provider == "azure":
+            self._init_azure(api_key, model_name)
+            return
+
+        self.missing_config = "GEMINI_API_KEY is not configured."
         if api_key:
             self.api_key = api_key
         elif settings.GEMINI_API_KEY:
@@ -91,7 +99,26 @@ class GeminiVerificationClient:
             self.api_key = None
 
         self.model_name = model_name or settings.GEMINI_MODEL or "gemini-3.8-flash"
+        self.vision_model = self.model_name
         self.fallback_model = settings.GEMINI_FALLBACK_MODEL or "gemini-2.5-pro"
+
+    def _init_azure(self, api_key: str | None, model_name: str | None) -> None:
+        secret = settings.CONSTRUCTION_AZURE_API_KEY
+        key = api_key or (secret.get_secret_value() if secret else None)
+        self.model_name = model_name or settings.CONSTRUCTION_AZURE_DEPLOYMENT
+        self.vision_model = settings.CONSTRUCTION_AZURE_VISION_DEPLOYMENT or self.model_name
+        self.fallback_model = None
+        missing = [
+            name
+            for name, value in (
+                ("CONSTRUCTION_AZURE_API_KEY", key),
+                ("CONSTRUCTION_AZURE_ENDPOINT", settings.CONSTRUCTION_AZURE_ENDPOINT),
+                ("CONSTRUCTION_AZURE_DEPLOYMENT", self.model_name),
+            )
+            if not value
+        ]
+        self.api_key = None if missing else key
+        self.missing_config = f"Azure is not configured. Missing: {', '.join(missing)}."
 
     def _invoke_with_retry(self, llm, messages, max_retries: int = 3, initial_delay: float = 2.0):
         """Invoke LLM synchronously with exponential backoff on 429 / ResourceExhausted."""
@@ -134,11 +161,27 @@ class GeminiVerificationClient:
                     raise e
 
     def _get_llm(self, structured_schema: type | None = None, model_name: str | None = None):
-        """Instantiate ChatGoogleGenerativeAI model."""
+        """Instantiate the configured chat model."""
         if not self.api_key or settings.USE_FAKE_MODEL:
             return None
 
         name = model_name or self.model_name
+        if self.provider == "azure":
+            # Temperature is omitted because some Azure models reject non-default values.
+            # max_retries=0 leaves retries to _ainvoke_with_retry so they do not multiply.
+            model = AzureChatOpenAI(
+                azure_endpoint=settings.CONSTRUCTION_AZURE_ENDPOINT,
+                azure_deployment=name,
+                api_key=self.api_key,
+                api_version=settings.CONSTRUCTION_AZURE_API_VERSION,
+                timeout=AZURE_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
+            if structured_schema:
+                # Strict JSON-schema mode rejects these schemas' default values.
+                return model.with_structured_output(structured_schema, method="function_calling")
+            return model
+
         model = ChatGoogleGenerativeAI(
             model=name,
             google_api_key=self.api_key,
@@ -170,18 +213,21 @@ class GeminiVerificationClient:
                 return res, self.fallback_model
             raise e
 
-    async def _ainvoke_with_fallback(self, messages, structured_schema: type | None = None) -> tuple[Any, str]:
+    async def _ainvoke_with_fallback(
+        self, messages, structured_schema: type | None = None, model_name: str | None = None
+    ) -> tuple[Any, str]:
         """Invoke LLM asynchronously. If primary model returns 404/not found, fall back to GEMINI_FALLBACK_MODEL.
         Never fall back on 429 or other failures. Returns (result, model_used).
         """
-        llm = self._get_llm(structured_schema=structured_schema, model_name=self.model_name)
+        primary = model_name or self.model_name
+        llm = self._get_llm(structured_schema=structured_schema, model_name=primary)
         if llm is None:
             raise RuntimeError("LLM not available (no API key or fake mode)")
         try:
             res = await self._ainvoke_with_retry(llm, messages)
-            return res, self.model_name
+            return res, primary
         except Exception as e:
-            if _is_model_not_found(e) and self.fallback_model and self.fallback_model != self.model_name:
+            if _is_model_not_found(e) and self.fallback_model and self.fallback_model != primary:
                 logger.warning(
                     f"Gemini model {self.model_name} failed with 404/retired: {e}. "
                     f"Falling back to {self.fallback_model}..."
@@ -236,7 +282,7 @@ class GeminiVerificationClient:
             logger.info("USE_FAKE_MODEL=true: using the rule-based test extractor instead of Gemini")
             return self._fallback_extract_claims(ocr_text)
         if not self.api_key:
-            raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
+            raise GeminiExtractionError(self.missing_config)
 
         messages = [
             SystemMessage(content=DOCUMENT_EXTRACTION_SYSTEM_PROMPT),
@@ -255,7 +301,7 @@ class GeminiVerificationClient:
             elif isinstance(result, dict):
                 extracted = ExtractedProjectInfo(**result)
             else:
-                raise GeminiExtractionError(f"Gemini returned no structured data (got {type(result).__name__}).")
+                raise GeminiExtractionError(f"The model returned no structured data (got {type(result).__name__}).")
 
             self._filter_and_clean_claims(extracted)
 
@@ -272,7 +318,7 @@ class GeminiVerificationClient:
             raise
         except Exception as e:
             logger.error(f"Gemini structured extraction failed: {e}")
-            raise GeminiExtractionError(f"Gemini structured extraction failed: {e}") from e
+            raise GeminiExtractionError(f"Structured extraction failed: {e}") from e
 
     async def analyze_satellite_imagery(
         self,
@@ -336,7 +382,7 @@ class GeminiVerificationClient:
         if not self.api_key:
             audit.api_call_status = "NOT_ATTEMPTED"
             audit.parsed_response_status = "VISION_NOT_EXECUTED"
-            audit.error_message = "GEMINI_API_KEY is not configured."
+            audit.error_message = self.missing_config
             return VisionAnalysisOutput(
                 findings=self._vision_not_executed(claims, audit.error_message, "Vision analysis did not run."),
                 general_observations=audit.error_message,
@@ -393,7 +439,9 @@ Return structured findings for every claim according to the system instructions.
         ]
 
         try:
-            result, model_used = await self._ainvoke_with_fallback(messages, structured_schema=VisionModelResponse)
+            result, model_used = await self._ainvoke_with_fallback(
+                messages, structured_schema=VisionModelResponse, model_name=self.vision_model
+            )
             out = self._parse_vision_response(result, claims)
             audit.model_used = model_used
             audit.gemini_model_id = model_used
@@ -406,13 +454,13 @@ Return structured findings for every claim according to the system instructions.
             is_quota = _is_rate_limit(e)
             logger.warning(f"Gemini multimodal satellite analysis failed: {e}")
             audit.api_call_status = "FAILED"
-            audit.error_message = f"Gemini API Quota Exhausted (HTTP 429): {e}" if is_quota else str(e)
+            audit.error_message = f"Model API quota exhausted (HTTP 429): {e}" if is_quota else str(e)
             audit.parsed_response_status = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
             return VisionAnalysisOutput(
                 findings=self._vision_not_executed(
                     claims,
-                    "Gemini API rate limit reached (HTTP 429)." if is_quota else f"API call failed ({e}).",
+                    "Model API rate limit reached (HTTP 429)." if is_quota else f"API call failed ({e}).",
                     "Vision analysis failed; physical inspection required.",
                 ),
                 general_observations=audit.error_message,
@@ -441,9 +489,9 @@ Return structured findings for every claim according to the system instructions.
         if isinstance(result, dict):
             result = VisionModelResponse.model_validate(result)
         if not isinstance(result, VisionModelResponse):
-            raise ValueError(f"Gemini returned no structured data (got {type(result).__name__}).")
+            raise ValueError(f"The model returned no structured data (got {type(result).__name__}).")
         if claims and not result.findings:
-            raise ValueError("Gemini returned no findings for the submitted claims.")
+            raise ValueError("The model returned no findings for the submitted claims.")
         supports = {"SUPPORTED": True, "NOT_SUPPORTED": False, "INSUFFICIENT_EVIDENCE": None}
         return VisionAnalysisOutput(
             findings=[
@@ -707,7 +755,7 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             {
                 "type": "text",
                 "text": (
-                    f"You are evaluating high-resolution on-site inspection photographs against the following claims:\n"
+                    "You are evaluating high-resolution on-site inspection photographs against the following claims:\n"
                     + "\n".join([f"- Claim: {c.get('activity')}" for c in claims])
                     + "\n\nFor each claim, determine whether the physical photograph supports the claim, contradicts it, or provides insufficient evidence. Never invent observations."
                 ),
