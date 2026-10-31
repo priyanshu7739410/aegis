@@ -1,3 +1,16 @@
+import io
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+from unittest.mock import patch
+
+from PIL import Image
+from streamlit.testing.v1 import AppTest
+
+from agents.construction_verification import case_workflow as cw
 import pytest
 from unittest.mock import MagicMock
 import streamlit as st
@@ -102,3 +115,252 @@ def test_load_sample_demo_case():
     assert len(st.session_state.cv_claims) == 3
     assert st.session_state.cv_is_demo is True
 
+
+TESTS_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = TESTS_DIR.parent / "src"
+APP_PATH = SRC_DIR / "construction_app.py"
+
+
+def _png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _app(tmp_path, fake_model=True):
+    return AppTest.from_file(str(APP_PATH), default_timeout=60), patch.multiple(
+        "core.settings.settings", USE_FAKE_MODEL=fake_model, CONSTRUCTION_OUTPUT_DIR=str(tmp_path)
+    )
+
+
+def _seeded_case(tmp_path):
+    """A case that finished the workflow in test mode, with synthetic data labelled as such."""
+    case = cw.new_case()
+    cw.attach_document(case, "claim.png", _png())
+    case["extracted_text"] = "Fixture document text"
+    assert (
+        cw.apply_officer_review(
+            case,
+            {
+                "project_name": "Fixture Road",
+                "latitude": "13.05",
+                "longitude": "80.25",
+                "start_date": "2024-01-10",
+                "completion_date": "2024-06-20",
+                "claims": "Road surfacing",
+            },
+        )
+        == []
+    )
+    assert cw.run_stage(case, "retrieve") == []
+    cw.run_stage(case, "analyze")
+    return case
+
+
+def _labels(elements):
+    return [e.label for e in elements]
+
+
+def test_app_opens_on_five_stage_dashboard(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        at.run()
+    assert not at.exception
+    assert at.title[0].value == "Construction Claim Verification"
+    assert [t.label for t in at.tabs] == [
+        "1. Upload",
+        "2. Review details",
+        "3. Satellite images",
+        "4. Analyze claims",
+        "5. Report and decision",
+    ]
+    assert "Start New Case" in _labels(at.sidebar.button)
+    assert any("TEST MODE" in e.value for e in at.error)
+    assert [h.value for h in at.header] == [
+        "Upload document",
+        "Review extracted details",
+        "Retrieve satellite images",
+        "Analyze construction claims",
+        "Report and human decision",
+    ]
+    # No chat, agent selector or discovery control is present.
+    assert len(at.chat_input) == 0
+    assert not any("discover" in b.label.lower() for b in at.button)
+
+
+def test_app_production_mode_shows_no_test_banner(tmp_path):
+    at, settings_patch = _app(tmp_path, fake_model=False)
+    with settings_patch:
+        at.run()
+    assert not at.exception
+    assert not any("TEST MODE" in e.value for e in at.error)
+
+
+def test_review_form_renders_and_edits_update_case_state(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        case = cw.new_case()
+        cw.attach_document(case, "claim.png", _png())
+        case.update(extracted_text="text", extraction_ran=True)
+        at.session_state["case"] = case
+        at.run()
+        assert not at.exception
+        assert {
+            "Project name", "Contractor", "Construction type", "Payment amount (if stated)",
+            "Latitude (decimal degrees)", "Longitude (decimal degrees)",
+            "Start date (YYYY-MM-DD)", "Claimed completion date (YYYY-MM-DD)",
+        } <= set(_labels(at.text_input))
+        assert any("Missing: Latitude" in w.value for w in at.warning)
+
+        def field(label):
+            return next(i for i in at.text_input if i.label == label)
+
+        field("Project name").set_value("Edited Road")
+        field("Latitude (decimal degrees)").set_value("22.5")
+        field("Longitude (decimal degrees)").set_value("88.3")
+        field("Start date (YYYY-MM-DD)").set_value("2023-11-05")
+        field("Claimed completion date (YYYY-MM-DD)").set_value("2024-02-01")
+        next(a for a in at.text_area if a.label.startswith("Construction claims")).set_value("Paving")
+        next(b for b in at.button if b.label == "Confirm details").click()
+        at.run()
+
+    assert not at.exception
+    state = at.session_state["case"]
+    assert state["review_confirmed"] is True
+    assert state["project_name"] == "Edited Road"
+    assert state["construction_location"]["latitude"] == 22.5
+    assert state["bounding_box"] == [88.295, 22.495, 88.305, 22.505]
+    assert state["start_date"] == "2023-11-05"
+    assert any(b.label == "Find Sentinel-2 scenes" for b in at.button)
+
+
+def test_invalid_review_shows_errors_and_keeps_state_clean(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        case = cw.new_case()
+        cw.attach_document(case, "claim.png", _png())
+        case.update(extracted_text="text", extraction_ran=True)
+        at.session_state["case"] = case
+        at.run()
+        next(i for i in at.text_input if i.label.startswith("Latitude")).set_value("500")
+        next(b for b in at.button if b.label == "Confirm details").click()
+        at.run()
+    assert any("Latitude must be between" in e.value for e in at.error)
+    assert not at.session_state["case"].get("review_confirmed")
+
+
+def test_analysis_and_report_stages_render_labelled_test_data(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        at.session_state["case"] = _seeded_case(tmp_path)
+        at.run()
+    assert not at.exception
+    assert any("SYNTHETIC TEST DATA" in e.value for e in at.error)
+    assert "NDVI change" in _labels(at.metric)
+    subheaders = [s.value for s in at.subheader]
+    for section in ("Project", "Satellite provenance", "Spectral change",
+                    "Gemini findings by claim", "Evidence limitations", "Officer decision"):
+        assert section in subheaders
+    assert any(e.label.startswith("VISION_NOT_EXECUTED") for e in at.expander)
+
+
+def test_officer_decision_controls_require_inputs_and_record(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        case = _seeded_case(tmp_path)
+        at.session_state["case"] = case
+        at.run()
+        decision = next(s for s in at.selectbox if s.label == "Decision")
+        assert list(decision.options) == ["APPROVE", "REJECT", "REQUEST_INSPECTION", "HOLD"]
+        assert decision.value is None
+
+        next(b for b in at.button if b.label == "Record decision").click()
+        at.run()
+        assert any("Select a decision" in e.value for e in at.error)
+        assert not at.session_state["case"].get("officer_decision")
+
+        next(s for s in at.selectbox if s.label == "Decision").select("HOLD")
+        next(b for b in at.button if b.label == "Record decision").click()
+        at.run()
+        assert any("Officer identifier is required" in e.value for e in at.error)
+
+        next(s for s in at.selectbox if s.label == "Decision").select("HOLD")
+        next(i for i in at.text_input if i.label == "Officer identifier").set_value("OFF-9")
+        next(a for a in at.text_area if a.label == "Justification").set_value("Awaiting evidence")
+        next(b for b in at.button if b.label == "Record decision").click()
+        at.run()
+
+    assert not at.exception
+    record = at.session_state["case"]["officer_decision"]
+    assert record["decision"] == "HOLD" and record["officer_name_or_id"] == "OFF-9"
+    saved = tmp_path / "decisions" / f"{record['case_id']}_decision.json"
+    assert json.loads(saved.read_text())["justification"] == "Awaiting evidence"
+    assert not any(b.label == "Record decision" for b in at.button)
+
+
+def test_start_new_case_resets_state_and_widgets(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with settings_patch:
+        first = _seeded_case(tmp_path)
+        at.session_state["case"] = first
+        at.run()
+        next(b for b in at.sidebar.button if b.label == "Start New Case").click()
+        at.run()
+    assert not at.exception
+    second = at.session_state["case"]
+    assert second["case_id"] != first["case_id"]
+    assert set(second) == {"case_id", "document_paths", "form_revision", "stage_errors"}
+    assert not at.metric and not at.expander
+    assert any("Upload a PDF" in i.value for i in at.info)
+    assert not any(i.label == "Project name" for i in at.text_input)
+
+
+def test_reruns_do_not_repeat_external_work(tmp_path):
+    at, settings_patch = _app(tmp_path)
+    with (
+        settings_patch,
+        patch("agents.construction_verification.case_workflow.run_stage", wraps=cw.run_stage) as run,
+    ):
+        at.session_state["case"] = _seeded_case(tmp_path)
+        before = run.call_count
+        at.run()
+        at.run()
+        at.run()
+    assert run.call_count == before
+
+
+def test_app_import_excludes_unrelated_components(tmp_path):
+    code = textwrap.dedent(
+        f"""
+        import sys
+        sys.path[:0] = [{str(TESTS_DIR)!r}, {str(SRC_DIR)!r}]
+        import network_guard
+        network_guard.sanitize_environment()
+        network_guard.install()
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_file({str(APP_PATH)!r}, default_timeout=60).run()
+        assert not at.exception, at.exception
+        banned = [
+            "agents.agents", "agents.research_assistant", "agents.langgraph_supervisor_agent",
+            "agents.construction_verification.discovery_graph",
+            "agents.construction_verification.services.discovery_service",
+            "voice", "client",
+            "service", "construction_ui", "streamlit_app",
+        ]
+        loaded = [name for name in banned if name in sys.modules]
+        assert not loaded, loaded
+        assert not network_guard.session_log, network_guard.session_log
+        print("OK")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env={**os.environ, "CONSTRUCTION_OUTPUT_DIR": str(tmp_path), "USE_FAKE_MODEL": "true"},
+        cwd=SRC_DIR.parent,
+        stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert "OK" in result.stdout
