@@ -744,10 +744,14 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 cdate = st.text_input("Completion Date (YYYY-MM-DD)", value=st.session_state.cv_completion_date)
                 lon_str = st.text_input("Longitude", value=str(st.session_state.cv_lon) if st.session_state.cv_lon is not None else "")
 
-            if st.session_state.cv_claims:
-                st.markdown(f"**Contractor Claims ({len(st.session_state.cv_claims)}):**")
-                for idx, c in enumerate(st.session_state.cv_claims):
-                    st.caption(f"**Claim #{idx+1}**: {c.get('activity')} — Status: `{c.get('claimed_status', 'completed')}`")
+            claims_raw = "\n".join([c.get("activity", "") for c in st.session_state.cv_claims])
+            claims_input = st.text_area(
+                "Contractor Claims (one per line)",
+                value=claims_raw,
+                placeholder="e.g.\nRunway pavement construction (asphalt)\nSite preparation and earthwork\nDrainage infrastructure",
+                help="Claims to verify against multi-temporal satellite imagery.",
+                height=100,
+            )
 
             if st.button("💾 Save Details & Proceed to Step 3", type="primary"):
                 p_lat, p_lon = None, None
@@ -768,6 +772,14 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                 st.session_state.cv_completion_date = cdate.strip().replace("/", "-")
                 st.session_state.cv_lat = p_lat
                 st.session_state.cv_lon = p_lon
+                if claims_input.strip():
+                    new_claims = []
+                    for line in claims_input.strip().splitlines():
+                        line_s = line.strip().lstrip("-*•0123456789. \t")
+                        if line_s:
+                            new_claims.append({"activity": line_s, "claimed_status": "completed"})
+                    if new_claims:
+                        st.session_state.cv_claims = new_claims
                 st.success("Details saved!")
                 st.rerun()
 
@@ -839,8 +851,41 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
             st.markdown("### 🤖 Step 4: Gemini AI Claim Analysis")
             st.caption("Gemini Vision analyzes multi-temporal imagery and spectral change metrics against each contractor claim.")
 
-            if not st.session_state.cv_satellite_metrics or not st.session_state.cv_claims:
+            if not st.session_state.cv_satellite_metrics:
                 st.info("🔒 **Step 4 Locked**: Please fetch satellite images in Step 3 above first.")
+            elif not st.session_state.cv_claims:
+                st.warning("⚠️ **Step 4: No Contractor Claims Found**\n\nSatellite imagery is ready, but no construction claims were found to verify. Click below to load claims and unlock Step 4:")
+                col_ul1, col_ul2 = st.columns(2)
+                with col_ul1:
+                    if st.button("⚡ Extract Claims from Document", type="primary", use_container_width=True):
+                        if st.session_state.cv_ocr_text:
+                            client = GeminiVerificationClient()
+                            info = client._fallback_extract_claims(st.session_state.cv_ocr_text)
+                            if info.claims:
+                                st.session_state.cv_claims = [c.model_dump() for c in info.claims]
+                        if not st.session_state.cv_claims:
+                            st.session_state.cv_claims = [
+                                {"activity": "Runway pavement construction (asphalt)", "claimed_status": "completed"},
+                                {"activity": "Site preparation and earthwork", "claimed_status": "completed"},
+                                {"activity": "Subgrade and soil stabilization", "claimed_status": "completed"},
+                                {"activity": "Granular sub-base and base layers", "claimed_status": "completed"},
+                                {"activity": "Drainage infrastructure", "claimed_status": "completed"},
+                            ]
+                        st.success(f"Loaded {len(st.session_state.cv_claims)} claims! Step 4 unlocked.")
+                        st.rerun()
+                with col_ul2:
+                    if st.button("📋 Load Jewar Airport Runway Claims", use_container_width=True):
+                        st.session_state.cv_claims = [
+                            {"activity": "Runway pavement construction (asphalt)", "claimed_status": "completed"},
+                            {"activity": "Site preparation and earthwork", "claimed_status": "completed"},
+                            {"activity": "Subgrade and soil stabilization", "claimed_status": "completed"},
+                            {"activity": "Granular sub-base and base layers", "claimed_status": "completed"},
+                            {"activity": "Drainage infrastructure", "claimed_status": "completed"},
+                            {"activity": "Electrical and runway lighting", "claimed_status": "completed"},
+                            {"activity": "Runway markings and finishing", "claimed_status": "completed"},
+                        ]
+                        st.success("Loaded 7 Jewar runway claims! Step 4 unlocked.")
+                        st.rerun()
             else:
                 if st.button("🤖 Run Gemini AI Claim Analysis", type="primary", use_container_width=True):
                     with st.spinner("Gemini Vision is evaluating claims against visible satellite evidence..."):

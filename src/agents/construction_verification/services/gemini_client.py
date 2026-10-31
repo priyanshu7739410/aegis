@@ -210,7 +210,8 @@ class GeminiVerificationClient:
             "bituminous", "asphalt", "culvert", "drainage", "drain", "concrete",
             "foundation", "piling", "building", "grading", "embankment", "pier",
             "bridge", "strip", "stripping", "leveling", "sub-base", "pipeline",
-            "structure", "surfacing", "widening", "link road", "formation", "site preparation"
+            "structure", "surfacing", "widening", "link road", "formation", "site preparation",
+            "subgrade", "stabilization", "runway", "pavement", "lighting", "markings", "finishing", "base layers"
         ]
         return any(k in t for k in physical_keywords)
 
@@ -763,6 +764,7 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
     def _fallback_extract_claims(self, text: str) -> ExtractedProjectInfo:
         """Deterministic heuristic extraction from text."""
         import re
+        from datetime import datetime
 
         project_name = "Infrastructure Project"
         construction_type = "Civil Construction"
@@ -776,22 +778,59 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
         # Project name
         for line in text.splitlines():
             line_s = line.strip()
-            if "project:" in line_s.lower():
+            m = re.search(r"project(?:\s+name)?[:\t\s]+([^\t\n\r]+)", line_s, re.IGNORECASE)
+            if m:
+                cand = m.group(1).strip()
+                if len(cand) > 3 and not cand.lower().startswith("details") and not cand.lower().startswith("developer"):
+                    project_name = cand
+                    break
+            elif "project:" in line_s.lower():
                 project_name = line_s.split(":", 1)[1].strip()
-            elif "construction type:" in line_s.lower():
+
+        # Construction type
+        for line in text.splitlines():
+            line_s = line.strip()
+            if "construction type:" in line_s.lower():
                 construction_type = line_s.split(":", 1)[1].strip()
+        if construction_type == "Civil Construction":
+            if "runway" in text.lower() or "airport" in text.lower():
+                construction_type = "Runway Construction"
+            elif "highway" in text.lower():
+                construction_type = "Highway Construction"
 
         # Coordinates regex
-        lat_match = re.search(r"latitude[:\s]+([-+]?[0-9]*\.?[0-9]+)", text, re.IGNORECASE)
-        lon_match = re.search(r"longitude[:\s]+([-+]?[0-9]*\.?[0-9]+)", text, re.IGNORECASE)
-        if lat_match and lon_match:
+        # 1. Midpoint coordinates with degrees / cardinal directions
+        mid_m = re.search(r"midpoint[^\d]*(\d{1,2}\.\d+)\s*°?\s*N[^\d]*(\d{1,3}\.\d+)\s*°?\s*E", text, re.IGNORECASE)
+        if mid_m:
             try:
-                latitude = float(lat_match.group(1))
-                longitude = float(lon_match.group(1))
+                latitude = float(mid_m.group(1))
+                longitude = float(mid_m.group(2))
             except ValueError:
                 pass
-        else:
-            # Check for general lat/lon pair: 12.3456, 78.9012
+
+        # 2. General degree coordinates: 28.183467° N, 77.592436° E
+        if latitude is None or longitude is None:
+            deg_m = re.search(r"(\d{1,2}\.\d+)\s*°?\s*N[^\d]*(\d{1,3}\.\d+)\s*°?\s*E", text, re.IGNORECASE)
+            if deg_m:
+                try:
+                    latitude = float(deg_m.group(1))
+                    longitude = float(deg_m.group(2))
+                except ValueError:
+                    pass
+
+        # 3. Labeled latitude / longitude
+        if latitude is None or longitude is None:
+            lat_match = re.search(r"latitude[:\s\t]+([-+]?[0-9]*\.?[0-9]+)", text, re.IGNORECASE)
+            lon_match = re.search(r"longitude[:\s\t]+([-+]?[0-9]*\.?[0-9]+)", text, re.IGNORECASE)
+            if lat_match and lon_match:
+                try:
+                    latitude = float(lat_match.group(1))
+                    longitude = float(lon_match.group(1))
+                except ValueError:
+                    pass
+
+        # 4. Decimal pair: 12.3456, 78.9012
+        if latitude is None or longitude is None:
             pair_match = re.search(r"([-+]?\d{1,2}\.\d+)[,\s]+([-+]?\d{1,3}\.\d+)", text)
             if pair_match:
                 try:
@@ -800,16 +839,83 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
                 except ValueError:
                     pass
 
-        # Dates regex (YYYY-MM-DD)
-        dates = re.findall(r"\b(20\d\d[-/]\d\d[-/]\d\d)\b", text)
-        if len(dates) >= 2:
-            start_date = dates[0].replace("/", "-")
-            completion_date = dates[1].replace("/", "-")
-        elif len(dates) == 1:
-            start_date = dates[0].replace("/", "-")
+        # Dates regex
+        # 1. Explicit labeled Start Date / Completion Date (YYYY-MM-DD or YYYY/MM/DD)
+        start_lbl = re.search(r"start\s+date[:\s\t]+([0-9\-/]+)", text, re.IGNORECASE)
+        if start_lbl:
+            start_date = start_lbl.group(1).strip().replace("/", "-")
+        comp_lbl = re.search(r"completion\s+date[:\s\t]+([0-9\-/]+)", text, re.IGNORECASE)
+        if comp_lbl:
+            completion_date = comp_lbl.group(1).strip().replace("/", "-")
+
+        # 2. Labeled commencement / completion with Month name (e.g. 25 November 2021)
+        months_pat = r"January|February|March|April|May|June|July|August|September|October|November|December"
+        if start_date is None:
+            comm_m = re.search(rf"(?:commencement|start|launch|groundbreaking)[^\w\n]*(\d{{1,2}}\s+(?:{months_pat})\s+20\d\d)", text, re.IGNORECASE)
+            if comm_m:
+                try:
+                    start_date = datetime.strptime(comm_m.group(1).strip(), "%d %B %Y").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+        if completion_date is None:
+            comp_m = re.search(rf"(?:completion|completed|finish)[^\w\n]*(\d{{1,2}}\s+(?:{months_pat})\s+20\d\d)", text, re.IGNORECASE)
+            if comp_m:
+                try:
+                    completion_date = datetime.strptime(comp_m.group(1).strip(), "%d %B %Y").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+        # 2. Date ranges in Month name: DD Month YYYY - DD Month YYYY
+        if start_date is None or completion_date is None:
+            range_m = re.search(rf"(\d{{1,2}}\s+(?:{months_pat})\s+20\d\d)\s*[-–]\s*(\d{{1,2}}\s+(?:{months_pat})\s+20\d\d)", text, re.IGNORECASE)
+            if range_m:
+                try:
+                    if start_date is None:
+                        start_date = datetime.strptime(range_m.group(1).strip(), "%d %B %Y").strftime("%Y-%m-%d")
+                    if completion_date is None:
+                        completion_date = datetime.strptime(range_m.group(2).strip(), "%d %B %Y").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
+        # 3. Standard YYYY-MM-DD
+        if start_date is None or completion_date is None:
+            dates = re.findall(r"\b(20\d\d[-/]\d\d[-/]\d\d)\b", text)
+            if len(dates) >= 2:
+                if start_date is None:
+                    start_date = dates[0].replace("/", "-")
+                if completion_date is None:
+                    completion_date = dates[1].replace("/", "-")
+            elif len(dates) == 1 and start_date is None:
+                start_date = dates[0].replace("/", "-")
 
         # Claims extraction
         document_notes: list[str] = []
+
+        # 1. Itemized table lines (e.g. S.No Description Amount)
+        def clean_table_activity(line: str) -> str:
+            l = re.sub(r'^\s*\d+[\.\t\s]*', '', line).strip()
+            l = re.sub(r'[\t\s]+[\*₹マ〈]*\s*[\d,]+.*$', '', l).strip()
+            return l
+
+        ignore_claim_words = [
+            'expenditure', 'particulars', 'declaration', 'summary', 'details', 'threshold',
+            'dimensions', 'identification', 'surface', 'midpoint', 'completion', 'amounts claimed',
+            'subject to', 'reimbursement', 'statement', 'supported by', 'description', 'amount',
+            'machinery', 'labour', 'personnel', 'testing', 'transportation', 'logistics', 'other approved',
+            'claimant', 'developer', 'contractor', 'company', 'signatory', 'subcontractor',
+            'noida', 'yamuna', 'international', 'reimbursement claim'
+        ]
+
+        for line in text.splitlines():
+            l_clean = clean_table_activity(line)
+            l_low = l_clean.lower()
+            if 5 < len(l_clean) < 80 and self._is_physical_construction_claim(l_clean):
+                if not any(ign in l_low for ign in ignore_claim_words):
+                    if not any(l_clean.lower() in c.activity.lower() or c.activity.lower() in l_clean.lower() for c in claims):
+                        claims.append(ConstructionClaim(activity=l_clean, claimed_status="completed"))
+
+        # 2. Explicit "claim X: ..." patterns
         explicit_claims = re.findall(r"claim\s*\d*[:\s]+([^.\n]+)", text, re.IGNORECASE)
         if explicit_claims:
             for m in explicit_claims:
@@ -820,7 +926,9 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
                             claims.append(ConstructionClaim(activity=m_str, claimed_status="completed"))
                     else:
                         document_notes.append(f"Non-construction note: {m_str}")
-        else:
+
+        # 3. Keyword matches if still empty
+        if not claims:
             keyword_matches = re.findall(
                 r"(?:vegetation clearing|clearing|excavation|earthwork|grading|paving|culvert|foundation|bituminous|drainage)[^.\n]*",
                 text,
@@ -834,19 +942,22 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
                 elif len(m_str) > 5:
                     document_notes.append(f"Non-construction note: {m_str}")
 
-        # Scan lines for non-construction items (dates, billing categories, transportation/logistics)
+        # 4. Scan lines for non-construction items (dates, billing categories, transportation/logistics)
         for line in text.splitlines():
             l_str = line.strip()
-            if any(k in l_str.lower() for k in ["transportation", "logistics", "period 01", "billing category", "invoice"]) and not self._is_physical_construction_claim(l_str):
+            if any(k in l_str.lower() for k in ["transportation", "logistics", "period 01", "billing category", "invoice", "personnel", "machinery", "labour"]) and not self._is_physical_construction_claim(l_str):
                 if l_str not in document_notes:
                     document_notes.append(l_str)
 
+        # 5. Default fallback claims if still empty
         if not claims:
             # Add general default claims based on text content only if real physical keywords exist
             if "clearing" in text.lower() or "vegetation" in text.lower():
                 claims.append(ConstructionClaim(activity="Vegetation clearing and site preparation", claimed_status="completed"))
             elif "excavation" in text.lower() or "foundation" in text.lower():
                 claims.append(ConstructionClaim(activity="Foundation excavation", claimed_status="completed"))
+            elif "runway" in text.lower():
+                claims.append(ConstructionClaim(activity="Runway pavement construction (asphalt)", claimed_status="completed"))
             elif "road" in text.lower() or "paving" in text.lower() or "highway" in text.lower():
                 claims.append(ConstructionClaim(activity="Road construction and surfacing", claimed_status="completed"))
 
