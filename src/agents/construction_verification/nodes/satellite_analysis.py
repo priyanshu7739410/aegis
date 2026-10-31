@@ -25,6 +25,8 @@ async def satellite_analysis_node(
         logger.error(err)
         return {
             "errors": errors + [err],
+            "satellite_error": state.get("satellite_error") or err,
+            "satellite_metrics": None,
             "messages": [AIMessage(content=f"Skipping satellite analysis: {err}")],
         }
 
@@ -38,18 +40,24 @@ async def satellite_analysis_node(
             after_scene=after_scene,
         )
 
+        bsi_line = (
+            f"- **Mean Bare Soil Index (BSI)**: Before {metrics['mean_bsi_before']:.3f} -> After {metrics['mean_bsi_after']:.3f} (Δ {metrics['delta_bsi']:+.3f})\n"
+            if metrics.get("delta_bsi") is not None
+            else "- **Bare Soil Index (BSI)**: not available (no SWIR band in the scene)\n"
+        )
         msg = (
             f"Remote Sensing Change Analysis Completed:\n"
-            f"- **Mean NDVI Before**: {metrics.get('mean_ndvi_before', 0.0):.3f} | **After**: {metrics.get('mean_ndvi_after', 0.0):.3f} (Δ {metrics.get('delta_ndvi', 0.0):+.3f})\n"
-            f"- **Vegetation Loss Fraction**: {metrics.get('vegetation_loss_fraction', 0.0) * 100:.1f}% of site area\n"
-            f"- **Estimated Disturbed Ground**: {metrics.get('potential_disturbed_area_m2', 0.0):,.0f} m²\n"
-            f"- **Mean Bare Soil Index (BSI)**: Before {metrics.get('mean_bsi_before', 0.0):.3f} -> After {metrics.get('mean_bsi_after', 0.0):.3f} (Δ {metrics.get('delta_bsi', 0.0):+.3f})\n"
-            f"- **Valid Cloud-Free Observation**: {metrics.get('valid_observation_coverage_pct', 0.0):.1f}%\n"
+            f"- **Mean NDVI Before**: {metrics['mean_ndvi_before']:.3f} | **After**: {metrics['mean_ndvi_after']:.3f} (Δ {metrics['delta_ndvi']:+.3f})\n"
+            f"- **Vegetation Loss Fraction**: {metrics['vegetation_loss_fraction'] * 100:.1f}% of site area\n"
+            f"- **Estimated Disturbed Ground**: {metrics['potential_disturbed_area_m2']:,.0f} m²\n"
+            + bsi_line
+            + f"- **Valid Cloud-Free Observation**: {metrics['valid_observation_coverage_pct']:.1f}%\n"
         )
 
         return {
             "case_id": case_id,
             "satellite_metrics": metrics,
+            "satellite_error": None,
             "messages": [AIMessage(content=msg)],
         }
 

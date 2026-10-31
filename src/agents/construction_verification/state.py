@@ -10,7 +10,12 @@ class ConstructionVerificationState(MessagesState, total=False):
     document_paths: list[str]
     extracted_text: str
 
+    ocr_error: str | None
+    extraction_error: str | None
+
     project_name: str
+    contractor: str | None
+    payment_amount: str | None
     construction_location: dict[str, Any]
     construction_type: str
     construction_claims: list[dict[str, Any]]

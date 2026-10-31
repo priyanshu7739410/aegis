@@ -28,6 +28,7 @@ from agents.construction_verification.schemas import (
     VisionAnalysisOutput,
     VisionClaimFinding,
     VisionExecutionAudit,
+    VisionModelResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,10 @@ def _is_model_not_found(e: Exception) -> bool:
             "model not found",
         ]
     ) and not _is_rate_limit(e)
+
+
+class GeminiExtractionError(Exception):
+    """Gemini could not produce structured project details from the document text."""
 
 
 class GeminiVerificationClient:
@@ -227,10 +232,11 @@ class GeminiVerificationClient:
 
     async def extract_project_info(self, ocr_text: str) -> ExtractedProjectInfo:
         """Extract structured construction claims and project metadata from document text."""
-        is_mocked = hasattr(self._ainvoke_with_fallback, "mock_calls") or hasattr(self._ainvoke_with_fallback, "assert_called")
-        if (not self.api_key or settings.USE_FAKE_MODEL) and not is_mocked:
-            logger.info("Using rule-based/synthetic extraction fallback (USE_FAKE_MODEL=True or no GEMINI_API_KEY)")
+        if settings.USE_FAKE_MODEL:
+            logger.info("USE_FAKE_MODEL=true: using the rule-based test extractor instead of Gemini")
             return self._fallback_extract_claims(ocr_text)
+        if not self.api_key:
+            raise GeminiExtractionError("GEMINI_API_KEY is not configured.")
 
         messages = [
             SystemMessage(content=DOCUMENT_EXTRACTION_SYSTEM_PROMPT),
@@ -249,7 +255,7 @@ class GeminiVerificationClient:
             elif isinstance(result, dict):
                 extracted = ExtractedProjectInfo(**result)
             else:
-                extracted = self._fallback_extract_claims(ocr_text)
+                raise GeminiExtractionError(f"Gemini returned no structured data (got {type(result).__name__}).")
 
             self._filter_and_clean_claims(extracted)
 
@@ -262,9 +268,11 @@ class GeminiVerificationClient:
                 if "project_dates" not in extracted.missing_fields:
                     extracted.missing_fields.append("project_dates")
             return extracted
+        except GeminiExtractionError:
+            raise
         except Exception as e:
-            logger.warning(f"Gemini structured extraction failed: {e}. Falling back to heuristic parser.")
-            return self._fallback_extract_claims(ocr_text)
+            logger.error(f"Gemini structured extraction failed: {e}")
+            raise GeminiExtractionError(f"Gemini structured extraction failed: {e}") from e
 
     async def analyze_satellite_imagery(
         self,
@@ -301,19 +309,8 @@ class GeminiVerificationClient:
             audit.parsed_response_status = "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
 
-            # Explicit unverified findings - do NOT fabricate successful reasoning
-            failed_findings = [
-                VisionClaimFinding(
-                    claim=c.get("activity", ""),
-                    observed_changes=[],
-                    supports_claim="NOT_ANALYZED",
-                    reasoning=f"VISION_NOT_EXECUTED: {err_msg}",
-                    limitations=["Image artifacts missing from local storage."],
-                )
-                for c in claims
-            ]
             return VisionAnalysisOutput(
-                findings=failed_findings,
+                findings=self._vision_not_executed(claims, err_msg, "Image artifacts missing from local storage."),
                 general_observations="Multimodal vision analysis could not be executed because image files are missing.",
                 vision_audit=audit,
             )
@@ -328,16 +325,23 @@ class GeminiVerificationClient:
         except Exception as img_err:
             logger.warning(f"Error inspecting image dimensions: {img_err}")
 
-        llm = self._get_llm(VisionAnalysisOutput)
-        if llm is None:
-            # Fake/test model mode
+        if settings.USE_FAKE_MODEL:
             audit.api_call_status = "NOT_ATTEMPTED"
-            audit.parsed_response_status = "TEST_SYNTHETIC" if settings.USE_FAKE_MODEL else "VISION_NOT_EXECUTED"
-            audit.vision_actually_executed = False
-            audit.error_message = "No Gemini API key configured or USE_FAKE_MODEL=True"
+            audit.parsed_response_status = "TEST_SYNTHETIC"
+            audit.error_message = "USE_FAKE_MODEL=true: Gemini was not called."
             out = self._fallback_satellite_vision(claims, metrics)
             out.vision_audit = audit
             return out
+
+        if not self.api_key:
+            audit.api_call_status = "NOT_ATTEMPTED"
+            audit.parsed_response_status = "VISION_NOT_EXECUTED"
+            audit.error_message = "GEMINI_API_KEY is not configured."
+            return VisionAnalysisOutput(
+                findings=self._vision_not_executed(claims, audit.error_message, "Vision analysis did not run."),
+                general_observations=audit.error_message,
+                vision_audit=audit,
+            )
 
         b64_before = encode_image_base64(before_image_path)
         b64_after = encode_image_base64(after_image_path)
@@ -389,54 +393,73 @@ Return structured findings for every claim according to the system instructions.
         ]
 
         try:
-            result, model_used = await self._ainvoke_with_fallback(messages, structured_schema=VisionAnalysisOutput)
+            result, model_used = await self._ainvoke_with_fallback(messages, structured_schema=VisionModelResponse)
+            out = self._parse_vision_response(result, claims)
             audit.model_used = model_used
             audit.gemini_model_id = model_used
             audit.api_call_status = "SUCCESS"
             audit.parsed_response_status = "SUCCESS"
             audit.vision_actually_executed = True
-
-            if isinstance(result, VisionAnalysisOutput):
-                result.vision_audit = audit
-                return result
-            if isinstance(result, dict):
-                out = VisionAnalysisOutput(**result)
-                out.vision_audit = audit
-                return out
-
-            audit.parsed_response_status = "NOT_ANALYZED"
-            out = self._fallback_satellite_vision(claims, metrics)
             out.vision_audit = audit
             return out
         except Exception as e:
             is_quota = _is_rate_limit(e)
-            err_msg = f"Gemini multimodal satellite analysis failed: {e}"
-            logger.warning(err_msg)
+            logger.warning(f"Gemini multimodal satellite analysis failed: {e}")
             audit.api_call_status = "FAILED"
             audit.error_message = f"Gemini API Quota Exhausted (HTTP 429): {e}" if is_quota else str(e)
             audit.parsed_response_status = "QUOTA_EXHAUSTED" if is_quota else "VISION_NOT_EXECUTED"
             audit.vision_actually_executed = False
-
-            # Strict requirement: NEVER replace a failed vision call with generic successful-looking reasoning
-            failed_findings = [
-                VisionClaimFinding(
-                    claim=c.get("activity", ""),
-                    observed_changes=[],
-                    supports_claim="NOT_ANALYZED",
-                    reasoning=(
-                        f"QUOTA_EXHAUSTED: Gemini API rate limit reached (HTTP 429)."
-                        if is_quota
-                        else f"VISION_NOT_EXECUTED: API call failed ({e})."
-                    ),
-                    limitations=["Vision analysis failed / rate limited; physical inspection required."],
-                )
-                for c in claims
-            ]
             return VisionAnalysisOutput(
-                findings=failed_findings,
+                findings=self._vision_not_executed(
+                    claims,
+                    "Gemini API rate limit reached (HTTP 429)." if is_quota else f"API call failed ({e}).",
+                    "Vision analysis failed; physical inspection required.",
+                ),
                 general_observations=audit.error_message,
                 vision_audit=audit,
             )
+
+    @staticmethod
+    def _vision_not_executed(
+        claims: list[dict[str, Any]], reason: str, limitation: str
+    ) -> list[VisionClaimFinding]:
+        return [
+            VisionClaimFinding(
+                claim=c.get("activity", ""),
+                supports_claim="VISION_NOT_EXECUTED",
+                status="VISION_NOT_EXECUTED",
+                reasoning=f"VISION_NOT_EXECUTED: {reason}",
+                limitations=[limitation],
+                recommended_follow_up="Re-run the analysis or arrange a physical inspection.",
+            )
+            for c in claims
+        ]
+
+    @staticmethod
+    def _parse_vision_response(result: Any, claims: list[dict[str, Any]]) -> VisionAnalysisOutput:
+        """Convert the model response, rejecting anything that is not a usable assessment."""
+        if isinstance(result, dict):
+            result = VisionModelResponse.model_validate(result)
+        if not isinstance(result, VisionModelResponse):
+            raise ValueError(f"Gemini returned no structured data (got {type(result).__name__}).")
+        if claims and not result.findings:
+            raise ValueError("Gemini returned no findings for the submitted claims.")
+        supports = {"SUPPORTED": True, "NOT_SUPPORTED": False, "INSUFFICIENT_EVIDENCE": None}
+        return VisionAnalysisOutput(
+            findings=[
+                VisionClaimFinding(
+                    claim=f.claim,
+                    observed_changes=f.visual_observations,
+                    supports_claim=supports[f.status],
+                    status=f.status,
+                    reasoning=f.reasoning,
+                    limitations=f.limitations,
+                    recommended_follow_up=f.recommended_follow_up,
+                )
+                for f in result.findings
+            ],
+            general_observations=result.general_observations,
+        )
 
     def analyze_discovery_imagery(
         self,

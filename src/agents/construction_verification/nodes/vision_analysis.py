@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -31,6 +30,12 @@ async def vision_analysis_node(
         return {
             "errors": errors + [err],
             "vision_findings": {"findings": []},
+            "vision_audit": {
+                "vision_actually_executed": False,
+                "api_call_status": "NOT_ATTEMPTED",
+                "parsed_response_status": "VISION_NOT_EXECUTED",
+                "error_message": err,
+            },
             "messages": [AIMessage(content=f"Skipping vision analysis: {err}")],
         }
 
@@ -44,20 +49,16 @@ async def vision_analysis_node(
             metrics=metrics,
             before_date=before_date,
             after_date=after_date,
+            before_scene_id=before_scene.get("scene_id"),
+            after_scene_id=after_scene.get("scene_id"),
+            raster_dimensions=tuple(metrics["raster_shape"]) if metrics.get("raster_shape") else None,
         )
 
         findings_dicts = [f.model_dump() for f in vision_output.findings]
 
         msg_lines = ["**Gemini Multimodal Satellite Vision Findings:**"]
         for f in findings_dicts:
-            status_indicator = (
-                "✅ Visible changes support claim"
-                if f.get("supports_claim") is True
-                else "❌ Contradicted by imagery"
-                if f.get("supports_claim") is False
-                else "⚠️ Inconclusive / Insufficient satellite resolution"
-            )
-            msg_lines.append(f"- **{f.get('claim')}**: {status_indicator}\n  _{f.get('reasoning')}_")
+            msg_lines.append(f"- **{f.get('claim')}**: {f.get('status')}\n  _{f.get('reasoning')}_")
 
         audit_dict = vision_output.vision_audit.model_dump() if getattr(vision_output, "vision_audit", None) else {}
         return {
@@ -74,6 +75,13 @@ async def vision_analysis_node(
         logger.error(err)
         return {
             "errors": errors + [err],
+            "vision_findings": {"findings": []},
+            "vision_audit": {
+                "vision_actually_executed": False,
+                "api_call_status": "FAILED",
+                "parsed_response_status": "VISION_NOT_EXECUTED",
+                "error_message": str(e),
+            },
             "messages": [AIMessage(content=err)],
         }
 

@@ -37,8 +37,11 @@ async def test_regression_1_uploaded_document_reaches_ocr(tmp_path):
     test_pdf.write_text(ROAD_LETTER_TEXT, encoding="utf-8")
 
     client = OCRClient()
-    # Mock OCR.space to ensure it is called with the actual uploaded file
-    with patch.object(client, "_call_ocr_space", new_callable=AsyncMock) as mock_call:
+    # This fixture has no real PDF structure, so it must take the OCR.space path.
+    with (
+        patch("core.settings.settings.USE_FAKE_MODEL", False),
+        patch.object(client, "_call_ocr_space", new_callable=AsyncMock) as mock_call,
+    ):
         mock_call.return_value = ROAD_LETTER_TEXT
         text = await client.extract_text_from_file(test_pdf)
 
@@ -320,8 +323,7 @@ async def test_regression_10_satellite_verification_discovery_or_error():
                 "rgb_before_preview_path": "mock_b.png",
                 "rgb_after_preview_path": "mock_a.png",
             }
-            with patch("agents.construction_verification.nodes.vision_analysis.GeminiVerificationClient.analyze_satellite_imagery", return_value=mock_vision), \
-                 patch("agents.construction_verification.nodes.vision_analysis.Path.exists", return_value=True):
+            with patch("agents.construction_verification.nodes.vision_analysis.GeminiVerificationClient.analyze_satellite_imagery", return_value=mock_vision):
                 result = await construction_verification_agent.ainvoke(
                     inputs, config={"configurable": {"thread_id": inputs["case_id"]}}
                 )
@@ -335,7 +337,7 @@ async def test_regression_10_satellite_verification_discovery_or_error():
 
 @pytest.mark.asyncio
 async def test_regression_10_when_gemini_fails():
-    """Test 10 (Gemini failure): Assert what is asserted when Gemini fails (NOT_ANALYZED status)."""
+    """Test 10 (Gemini failure): Assert what is asserted when Gemini fails (VISION_NOT_EXECUTED status)."""
     inputs = {
         "case_id": "CASE-SAT-FAIL-001",
         "project_name": "Rural Link Road, Barasat–Kazipara",
@@ -379,13 +381,12 @@ async def test_regression_10_when_gemini_fails():
                 "valid_observation_coverage_pct": 100.0,
                 "rgb_before_preview_path": "mock_b.png", "rgb_after_preview_path": "mock_a.png",
             }
-            with patch("agents.construction_verification.nodes.vision_analysis.GeminiVerificationClient.analyze_satellite_imagery", return_value=mock_failed_vision), \
-                 patch("agents.construction_verification.nodes.vision_analysis.Path.exists", return_value=True):
+            with patch("agents.construction_verification.nodes.vision_analysis.GeminiVerificationClient.analyze_satellite_imagery", return_value=mock_failed_vision):
                 result = await construction_verification_agent.ainvoke(
                     inputs, config={"configurable": {"thread_id": inputs["case_id"]}}
                 )
-                assert result["verification_results"][0]["status"] == "NOT_ANALYZED"
-                assert result["overall_status"] == "NOT_ANALYZED_REQUIRES_INSPECTION"
+                assert result["verification_results"][0]["status"] == "VISION_NOT_EXECUTED"
+                assert result["overall_status"] == "VISION_NOT_EXECUTED_REQUIRES_INSPECTION"
                 assert result["vision_audit"]["vision_actually_executed"] is False
                 assert result["vision_audit"]["parsed_response_status"] == "QUOTA_EXHAUSTED"
 

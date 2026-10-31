@@ -55,11 +55,13 @@ async def ocr_node(
         err = "Could not extract any text from the provided documents."
         return {
             "errors": errors + [err],
+            "ocr_error": "; ".join(errors + [err]),
             "messages": [AIMessage(content=f"Error extracting document text: {'; '.join(errors)}")],
         }
 
     return {
         "extracted_text": final_text,
+        "ocr_error": None,
         "errors": errors,
         "messages": [AIMessage(content=f"Successfully extracted {len(final_text)} characters from {len(document_paths)} document(s).")],
     }

@@ -3,7 +3,10 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
-from agents.construction_verification.services.gemini_client import GeminiVerificationClient
+from agents.construction_verification.services.gemini_client import (
+    GeminiExtractionError,
+    GeminiVerificationClient,
+)
 from agents.construction_verification.state import ConstructionVerificationState
 
 logger = logging.getLogger(__name__)
@@ -24,7 +27,16 @@ async def extract_claims_node(
         }
 
     gemini_client = GeminiVerificationClient()
-    info = await gemini_client.extract_project_info(extracted_text)
+    try:
+        info = await gemini_client.extract_project_info(extracted_text)
+    except GeminiExtractionError as e:
+        err = f"Gemini extraction failed: {e}"
+        logger.error(err)
+        return {
+            "errors": errors + [err],
+            "extraction_error": str(e),
+            "messages": [AIMessage(content=err)],
+        }
 
     # Resolve coordinates and bounding box with manual officer corrections taking precedence
     loc = info.location
@@ -116,6 +128,9 @@ async def extract_claims_node(
 
     return {
         "project_name": project_name,
+        "contractor": state.get("contractor") or info.contractor,
+        "payment_amount": state.get("payment_amount") or info.payment_amount,
+        "extraction_error": None,
         "construction_type": construction_type,
         "construction_location": location_dict,
         "construction_claims": claims_dicts,

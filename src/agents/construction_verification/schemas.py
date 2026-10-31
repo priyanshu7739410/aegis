@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class VerificationStatus(StrEnum):
@@ -47,9 +47,15 @@ class LocationInfo(BaseModel):
 
 
 class ExtractedProjectInfo(BaseModel):
-    project_name: str = Field(description="Name or contract title of the construction project.")
-    construction_type: str = Field(
-        description="Type of construction (e.g., Road construction, Building construction, Bridge, Pipeline)."
+    project_name: str | None = Field(default=None, description="Name or contract title of the construction project.")
+    contractor: str | None = Field(default=None, description="Contractor named in the document.")
+    construction_type: str | None = Field(
+        default=None,
+        description="Type of construction (e.g., Road construction, Building construction, Bridge, Pipeline).",
+    )
+    payment_amount: str | None = Field(
+        default=None,
+        description="Claimed payment amount with currency, exactly as stated in the document.",
     )
     location: LocationInfo | None = Field(default=None, description="Site location information.")
     start_date: str | None = Field(
@@ -109,6 +115,12 @@ class SatelliteMetrics(BaseModel):
     ndvi_diff_image_path: str | None = None
     rgb_before_preview_path: str | None = None
     rgb_after_preview_path: str | None = None
+    before_scene_id: str | None = None
+    after_scene_id: str | None = None
+    crs: str | None = None
+    raster_shape: list[int] | None = None
+    pixel_area_m2: float | None = None
+    synthetic: bool = False
 
 
 class VisionClaimFinding(BaseModel):
@@ -126,6 +138,41 @@ class VisionClaimFinding(BaseModel):
         default_factory=list,
         description="Satellite resolution, spectral, or temporal limitations (e.g. 10m Sentinel-2 pixel size, sub-surface invisibility)."
     )
+    status: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED"] | None = None
+    recommended_follow_up: str | None = None
+
+    @model_validator(mode="after")
+    def _derive_status(self) -> "VisionClaimFinding":
+        if self.status is None:
+            if self.supports_claim is True:
+                self.status = "SUPPORTED"
+            elif self.supports_claim is False:
+                self.status = "NOT_SUPPORTED"
+            elif self.supports_claim in ("NOT_ANALYZED", "VISION_NOT_EXECUTED"):
+                self.status = "VISION_NOT_EXECUTED"
+            else:
+                self.status = "INSUFFICIENT_EVIDENCE"
+        return self
+
+
+class ClaimVisionAssessment(BaseModel):
+    """Per-claim result requested from Gemini. Kept free of unions and audit fields."""
+
+    claim: str = Field(description="The claim text, copied exactly as provided.")
+    status: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE"] = Field(
+        description="SUPPORTED if visible evidence supports the claim, NOT_SUPPORTED if contradicted, otherwise INSUFFICIENT_EVIDENCE."
+    )
+    visual_observations: list[str] = Field(default_factory=list, description="What is visible in the two images.")
+    reasoning: str = Field(description="Evidence-based explanation of the status.")
+    limitations: list[str] = Field(default_factory=list, description="What these images cannot establish.")
+    recommended_follow_up: str = Field(description="Suggested next verification step for the human officer.")
+
+
+class VisionModelResponse(BaseModel):
+    """Structured output schema sent to Gemini Vision."""
+
+    findings: list[ClaimVisionAssessment] = Field(default_factory=list)
+    general_observations: str = ""
 
 
 class VisionAnalysisOutput(BaseModel):
@@ -178,12 +225,23 @@ class OfficerDecisionRecord(BaseModel):
     officer_name_or_id: str
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     notes: str | None = None
+    justification: str | None = None
+    report_sha256: str | None = None
+    evidence_mode: str | None = None
 
 
 class VerificationReport(BaseModel):
     case_id: str
     project_name: str
     construction_type: str
+    contractor: str | None = None
+    payment_amount: str | None = None
+    evidence_mode: Literal["LIVE_SERVICES", "SYNTHETIC_TEST_DATA"] = "LIVE_SERVICES"
+    before_scene: dict[str, Any] | None = None
+    after_scene: dict[str, Any] | None = None
+    vision_audit: dict[str, Any] | None = None
+    general_observations: str | None = None
+    evidence_limitations: list[str] = Field(default_factory=list)
     location: dict[str, Any]
     start_date: str | None = None
     completion_date: str | None = None

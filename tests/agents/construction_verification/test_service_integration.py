@@ -201,10 +201,10 @@ async def test_construction_agent_invoke_when_gemini_fails():
         )
 
     # Tight assertions when Gemini fails:
-    # 1. Claim status MUST be NOT_ANALYZED (never INSUFFICIENT_EVIDENCE or VERIFIED)
-    assert result["verification_results"][0]["status"] == "NOT_ANALYZED"
+    # 1. Claim status MUST be VISION_NOT_EXECUTED (never INSUFFICIENT_EVIDENCE or VERIFIED)
+    assert result["verification_results"][0]["status"] == "VISION_NOT_EXECUTED"
     # 2. Overall status must require inspection due to unanalyzed status
-    assert result["overall_status"] == "NOT_ANALYZED_REQUIRES_INSPECTION"
+    assert result["overall_status"] == "VISION_NOT_EXECUTED_REQUIRES_INSPECTION"
     # 3. Vision audit must explicitly record non-execution
     assert result["vision_audit"]["vision_actually_executed"] is False
     assert result["vision_audit"]["parsed_response_status"] in ("QUOTA_EXHAUSTED", "VISION_NOT_EXECUTED")

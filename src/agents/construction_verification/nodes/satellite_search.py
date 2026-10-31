@@ -1,3 +1,4 @@
+from datetime import date
 import logging
 from typing import Any
 from langchain_core.messages import AIMessage
@@ -9,6 +10,22 @@ from agents.construction_verification.state import ConstructionVerificationState
 logger = logging.getLogger(__name__)
 
 
+def _input_problem(bbox: list[float] | None, start_date: str | None, completion_date: str | None) -> str | None:
+    if not bbox or len(bbox) != 4:
+        return "Valid bounding box coordinates are required for satellite imagery search."
+    min_lon, min_lat, max_lon, max_lat = bbox
+    if not (-180 <= min_lon < max_lon <= 180 and -90 <= min_lat < max_lat <= 90):
+        return f"Invalid coordinates: bounding box {bbox} is outside the valid WGS84 range."
+    if not start_date or not completion_date:
+        return "Both start date and completion date are required to retrieve before and after imagery."
+    try:
+        if date.fromisoformat(start_date[:10]) > date.fromisoformat(completion_date[:10]):
+            return f"Start date {start_date} is after completion date {completion_date}."
+    except ValueError:
+        return f"Dates must be YYYY-MM-DD (got '{start_date}' and '{completion_date}')."
+    return None
+
+
 async def satellite_search_node(
     state: ConstructionVerificationState, config: RunnableConfig
 ) -> dict[str, Any]:
@@ -18,19 +35,14 @@ async def satellite_search_node(
     completion_date = state.get("completion_date")
     errors = list(state.get("errors", []))
 
-    if not bbox or len(bbox) != 4:
-        err = "Valid bounding box coordinates are required for satellite imagery search."
+    err = _input_problem(bbox, start_date, completion_date)
+    if err:
         logger.error(err)
         return {
             "errors": errors + [err],
-            "messages": [AIMessage(content=f"Cannot search satellite scenes: {err}")],
-        }
-
-    if not start_date or not completion_date:
-        err = "Both start date and completion date are required to retrieve before and after imagery."
-        logger.error(err)
-        return {
-            "errors": errors + [err],
+            "satellite_error": err,
+            "before_scene": {},
+            "after_scene": {},
             "messages": [AIMessage(content=f"Cannot search satellite scenes: {err}")],
         }
 
@@ -57,6 +69,7 @@ async def satellite_search_node(
             logger.warning(err)
             return {
                 "errors": errors + [err],
+                "satellite_error": err,
                 "before_scene": before_scene or {},
                 "after_scene": after_scene or {},
                 "messages": [AIMessage(content=f"Warning: {err}")],
@@ -71,6 +84,7 @@ async def satellite_search_node(
         return {
             "before_scene": before_scene,
             "after_scene": after_scene,
+            "satellite_error": None,
             "messages": [AIMessage(content=msg)],
         }
 
@@ -79,6 +93,9 @@ async def satellite_search_node(
         logger.error(err)
         return {
             "errors": errors + [err],
+            "satellite_error": err,
+            "before_scene": {},
+            "after_scene": {},
             "messages": [AIMessage(content=f"Error discovering satellite imagery: {e}")],
         }
     except Exception as e:
@@ -86,6 +103,9 @@ async def satellite_search_node(
         logger.error(err)
         return {
             "errors": errors + [err],
+            "satellite_error": err,
+            "before_scene": {},
+            "after_scene": {},
             "messages": [AIMessage(content=err)],
         }
 

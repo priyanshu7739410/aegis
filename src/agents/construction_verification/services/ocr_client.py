@@ -1,8 +1,9 @@
 import logging
-import os
 from pathlib import Path
 from typing import Any
 import httpx
+import pypdf
+from pypdf.errors import PyPdfError
 
 from core.settings import settings
 
@@ -10,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit for free tier OCR.space
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
+# Scanned PDFs often embed a few stray characters; those still need real OCR.
+MIN_EMBEDDED_TEXT_CHARS = 20
 
 
 class OCRError(Exception):
@@ -18,7 +22,7 @@ class OCRError(Exception):
 
 
 class OCRClient:
-    """Client for OCR.space API with safety, validation, and fallback support."""
+    """Client for OCR.space, using embedded PDF text locally when it exists."""
 
     def __init__(self, api_key: str | None = None, timeout: float = 30.0):
         if api_key:
@@ -35,25 +39,42 @@ class OCRClient:
         if not path.exists():
             raise FileNotFoundError(f"Document file not found at: {path}")
 
+        suffix = path.suffix.lower()
+        if suffix not in ALLOWED_EXTENSIONS:
+            raise OCRError(
+                f"Unsupported file format '{suffix}'. Supported: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            )
+
+        if suffix == ".pdf":
+            local_text = self._extract_pdf_text(path)
+            if local_text:
+                return local_text
+
+        if settings.USE_FAKE_MODEL:
+            raise OCRError(
+                f"'{path.name}' needs OCR.space, which is disabled while USE_FAKE_MODEL=true."
+            )
+        if not self.api_key:
+            raise OCRError(f"'{path.name}' needs OCR.space but OCR_API_KEY is not configured.")
+
         file_size = path.stat().st_size
         if file_size > MAX_FILE_SIZE_BYTES:
             raise OCRError(
                 f"File size ({file_size / (1024*1024):.2f}MB) exceeds OCR.space limit of 10MB."
             )
 
-        suffix = path.suffix.lower()
-        allowed_exts = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
-        if suffix not in allowed_exts:
-            raise OCRError(f"Unsupported file format '{suffix}'. Supported: {', '.join(allowed_exts)}")
-
-        # If running in fake mode or without an API key, use fallback / local extraction or mock
-        is_mocked = hasattr(self._call_ocr_space, "mock_calls") or hasattr(self._call_ocr_space, "assert_called")
-        if (settings.USE_FAKE_MODEL or not self.api_key) and not is_mocked:
-            logger.info("Using simulated/local OCR extraction (USE_FAKE_MODEL=True or no OCR_API_KEY)")
-            return self._fallback_extract(path)
-
-        # Call OCR.space API
         return await self._call_ocr_space(path)
+
+    @staticmethod
+    def _extract_pdf_text(path: Path) -> str:
+        """Return the PDF's embedded text, or an empty string when it needs real OCR."""
+        try:
+            reader = pypdf.PdfReader(str(path))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        except PyPdfError as e:
+            logger.warning(f"Local PDF text extraction failed for {path.name}: {e}")
+            return ""
+        return text if len(text) >= MIN_EMBEDDED_TEXT_CHARS else ""
 
     async def _call_ocr_space(self, path: Path) -> str:
         """Execute HTTP request to OCR.space API."""
@@ -83,7 +104,10 @@ class OCRClient:
             if response.status_code != 200:
                 raise OCRError(f"OCR.space API HTTP {response.status_code}: {response.text[:200]}")
 
-            result = response.json()
+            try:
+                result = response.json()
+            except ValueError as e:
+                raise OCRError(f"OCR.space returned a non-JSON response: {response.text[:200]}") from e
             return self._parse_ocr_response(result)
 
         except httpx.TimeoutException as e:
@@ -120,37 +144,3 @@ class OCRClient:
             raise OCRError("OCR completed but extracted text was completely empty.")
 
         return full_text
-
-    def _fallback_extract(self, path: Path) -> str:
-        """Extract text locally for text files or PDFs without substituting synthetic demo data."""
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            try:
-                import pypdf
-                reader = pypdf.PdfReader(str(path))
-                text = "\n".join([page.extract_text() or "" for page in reader.pages]).strip()
-                if text:
-                    return text
-                raise OCRError(f"Local PDF reader extracted 0 text characters from {path.name}.")
-            except OCRError:
-                raise
-            except Exception as e:
-                logger.warning(f"Local pypdf extraction fallback failed: {e}")
-                raise OCRError(f"Failed to read PDF document '{path.name}': {e}") from e
-
-        # If it's a text-based document or text test fixture
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-            if text:
-                return text
-            raise OCRError(f"Uploaded text document '{path.name}' is empty.")
-        except UnicodeDecodeError:
-            raise OCRError(
-                f"Cannot extract text from binary image '{path.name}' without OCR.space API. "
-                "Please configure a valid OCR_API_KEY in .env or provide document text manually."
-            )
-        except OCRError:
-            raise
-        except Exception as e:
-            raise OCRError(f"Unable to read document file '{path.name}': {e}") from e
-

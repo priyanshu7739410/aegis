@@ -9,6 +9,7 @@ from core.settings import settings
 logger = logging.getLogger(__name__)
 
 REQUIRED_ASSETS = ["red", "green", "blue", "nir", "scl"]
+STAC_TIMEOUT_SECONDS = 60.0
 
 
 class EarthSearchError(Exception):
@@ -80,7 +81,7 @@ class EarthSearchClient:
             return [self._get_synthetic_scene(bbox, datetime_range)]
 
         try:
-            client = pystac_client.Client.open(self.endpoint_url)
+            client = pystac_client.Client.open(self.endpoint_url, timeout=STAC_TIMEOUT_SECONDS)
             search = client.search(
                 collections=[self.collection],
                 bbox=bbox,
@@ -140,8 +141,6 @@ class EarthSearchClient:
 
         except Exception as e:
             logger.error(f"Error querying Earth Search STAC: {e}")
-            if settings.USE_FAKE_MODEL:
-                return [self._get_synthetic_scene(bbox, datetime_range)]
             raise EarthSearchError(f"Failed querying STAC service: {e}") from e
 
     def search_scene(

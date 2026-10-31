@@ -6,7 +6,10 @@ from agents.construction_verification.schemas import (
     ExtractedProjectInfo,
     LocationInfo,
 )
-from agents.construction_verification.services.gemini_client import GeminiVerificationClient
+from agents.construction_verification.services.gemini_client import (
+    GeminiExtractionError,
+    GeminiVerificationClient,
+)
 
 
 @pytest.mark.asyncio
@@ -36,7 +39,10 @@ async def test_construction_claim_extraction():
     )
 
     client = GeminiVerificationClient(api_key="mock_key")
-    with patch.object(client, "_ainvoke_with_fallback", return_value=(mock_extracted, "gemini-3.8-flash")):
+    with (
+        patch("core.settings.settings.USE_FAKE_MODEL", False),
+        patch.object(client, "_ainvoke_with_fallback", return_value=(mock_extracted, "gemini-3.8-flash")),
+    ):
         result = await client.extract_project_info(sample_ocr)
 
     assert isinstance(result, ExtractedProjectInfo)
@@ -60,8 +66,14 @@ async def test_missing_location_and_dates_detection():
     """
 
     client = GeminiVerificationClient(api_key="mock_key")
-    # Test heuristic fallback when model is not available or fails
-    with patch.object(client, "_ainvoke_with_fallback", side_effect=RuntimeError("Quota exhausted")):
+    model_output = ExtractedProjectInfo(
+        project_name="General Invoice",
+        claims=[ConstructionClaim(activity="Site clearance and earth leveling")],
+    )
+    with (
+        patch("core.settings.settings.USE_FAKE_MODEL", False),
+        patch.object(client, "_ainvoke_with_fallback", return_value=(model_output, "gemini-3.8-flash")),
+    ):
         result = await client.extract_project_info(incomplete_ocr)
 
     assert isinstance(result, ExtractedProjectInfo)
@@ -118,11 +130,18 @@ async def test_extraction_when_gemini_fails_does_not_pass_vacuously():
     """
 
     client = GeminiVerificationClient(api_key="mock_key")
-    # Simulate Gemini 429 quota exhaustion or 404
-    with patch.object(client, "_ainvoke_with_fallback", side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")):
+    # Simulate Gemini 429 quota exhaustion or 404: production must fail, not guess from the text.
+    with (
+        patch("core.settings.settings.USE_FAKE_MODEL", False),
+        patch.object(client, "_ainvoke_with_fallback", side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")),
+    ):
+        with pytest.raises(GeminiExtractionError, match="429"):
+            await client.extract_project_info(sample_text)
+
+    # The rule-based extractor remains available only in explicit test mode.
+    with patch("core.settings.settings.USE_FAKE_MODEL", True):
         res = await client.extract_project_info(sample_text)
 
-    # Strict assertions on fallback behavior:
     assert isinstance(res, ExtractedProjectInfo)
     assert res.project_name == "NH-44 Bypass Works"
     assert res.location.latitude == 12.9716
