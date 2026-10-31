@@ -140,6 +140,7 @@ celerybeat.pid
 
 # Environments
 .env
+graphify-out/
 .python-version
 .venv
 env/
@@ -196,3 +197,7 @@ smoke_live_app_failure.png
 
 # Claude Code agent worktrees (ephemeral, per-agent git checkouts)
 .claude/worktrees/
+
+
+# Construction Verification generated imagery and uploads
+outputs/

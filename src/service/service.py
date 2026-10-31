@@ -44,6 +44,7 @@ from schema import (
     UserThreadsInput,
 )
 from service.agui import router as agui_router
+from service.construction import router as construction_router
 from service.threads import list_user_threads
 from service.utils import (
     convert_message_content_to_string,
@@ -122,6 +123,7 @@ app = FastAPI(lifespan=lifespan, generate_unique_id_function=custom_generate_uni
 router = APIRouter(dependencies=[Depends(verify_bearer)])
 # AG-UI protocol endpoints inherit the same bearer auth - see service/agui.py
 router.include_router(agui_router)
+router.include_router(construction_router)
 
 
 @router.get("/info")

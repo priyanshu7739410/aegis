@@ -423,3 +423,169 @@ class AgentClient:
                 raise AgentClientError(f"Error: {e}")
 
         return UserThreads.model_validate(response.json())
+
+
+    def upload_construction_file(
+        self,
+        file_name: str,
+        file_bytes: bytes,
+        run_ocr: bool = True,
+        case_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload a construction document or inspection photograph to the backend."""
+        url = f"{self.base_url}/construction/upload"
+        files = {"file": (file_name, file_bytes)}
+        data: dict[str, Any] = {"run_ocr": "true" if run_ocr else "false"}
+        if case_id:
+            data["case_id"] = case_id
+        try:
+            response = httpx.post(
+                url,
+                files=files,
+                data=data,
+                headers=self._headers,
+                timeout=self.timeout or 60.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error uploading file to construction service: {e}")
+
+    def update_case_data(self, case_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Update persistent case metadata, coordinates, or corrections."""
+        url = f"{self.base_url}/construction/cases/{case_id}/update"
+        try:
+            response = httpx.post(
+                url,
+                json=data,
+                headers=self._headers,
+                timeout=self.timeout or 30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error updating case data: {e}")
+
+    def get_case_state(self, case_id: str) -> dict[str, Any]:
+        """Fetch full case record and verification status."""
+        url = f"{self.base_url}/construction/cases/{case_id}"
+        try:
+            response = httpx.get(
+                url,
+                headers=self._headers,
+                timeout=self.timeout or 30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error fetching case state: {e}")
+
+    def run_case_verification(self, case_id: str) -> dict[str, Any]:
+        """Trigger LangGraph verification pipeline for a validated case."""
+        url = f"{self.base_url}/construction/cases/{case_id}/verify"
+        try:
+            response = httpx.post(
+                url,
+                headers=self._headers,
+                timeout=self.timeout or 120.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error executing case verification: {e}")
+
+    def record_officer_decision(
+        self, case_id: str, decision: str, officer_name_or_id: str, notes: str | None = None
+    ) -> dict[str, Any]:
+        """Record an official human officer decision (APPROVE, REJECT, REQUEST_INSPECTION, HOLD)."""
+        url = f"{self.base_url}/construction/decision"
+        payload = {
+            "case_id": case_id,
+            "decision": decision,
+            "officer_name_or_id": officer_name_or_id,
+            "notes": notes,
+        }
+        try:
+            response = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error recording officer decision: {e}")
+
+    def get_case_decision(self, case_id: str) -> dict[str, Any]:
+        """Fetch audit record and decision for a construction verification case."""
+        url = f"{self.base_url}/construction/case/{case_id}"
+        try:
+            response = httpx.get(
+                url,
+                headers=self._headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error retrieving case decision: {e}")
+
+    def run_construction_discovery(
+        self,
+        latitude: float = 28.17,
+        longitude: float = 77.61,
+        radius_km: float = 5.0,
+        before_date_start: str = "2021-01-01",
+        before_date_end: str = "2021-03-31",
+        after_date_start: str = "2025-01-01",
+        after_date_end: str = "2025-03-31",
+        min_change_area_m2: float = 5000.0,
+        max_cloud_cover: float = 20.0,
+        area_name: str = "Noida International Airport, Jewar",
+    ) -> dict[str, Any]:
+        """Run independent construction discovery across multi-temporal Sentinel-2 imagery."""
+        url = f"{self.base_url}/construction/discover"
+        payload = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "radius_km": radius_km,
+            "before_date_start": before_date_start,
+            "before_date_end": before_date_end,
+            "after_date_start": after_date_start,
+            "after_date_end": after_date_end,
+            "min_change_area_m2": min_change_area_m2,
+            "max_cloud_cover": max_cloud_cover,
+            "area_name": area_name,
+        }
+        try:
+            response = httpx.post(
+                url,
+                json=payload,
+                headers=self._headers,
+                timeout=180.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error executing construction discovery: {e}")
+
+    def get_discovery_report(self, discovery_id: str) -> dict[str, Any]:
+        """Retrieve previous construction discovery report."""
+        url = f"{self.base_url}/construction/discover/{discovery_id}"
+        try:
+            response = httpx.get(url, headers=self._headers, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error fetching discovery report: {e}")
+
+    def get_discovery_geojson(self, discovery_id: str) -> dict[str, Any]:
+        """Retrieve GeoJSON candidate polygons for independent Google Earth Engine verification."""
+        url = f"{self.base_url}/construction/discover/{discovery_id}/geojson"
+        try:
+            response = httpx.get(url, headers=self._headers, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise AgentClientError(f"Error fetching discovery GeoJSON: {e}")

@@ -1,0 +1,254 @@
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any, Literal
+from pydantic import BaseModel, Field
+
+
+class VerificationStatus(StrEnum):
+    SUPPORTED = "SUPPORTED"
+    NOT_SUPPORTED = "NOT_SUPPORTED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    VISION_NOT_EXECUTED = "VISION_NOT_EXECUTED"
+
+
+class OfficerDecisionType(StrEnum):
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+    REQUEST_INSPECTION = "REQUEST_INSPECTION"
+    HOLD = "HOLD"
+
+
+class ConstructionClaim(BaseModel):
+    activity: str = Field(description="Name or description of the construction activity claimed.")
+    claimed_status: str = Field(
+        default="completed",
+        description="Claimed completion status (e.g. completed, in progress, 100%)."
+    )
+    quantity: str | None = Field(
+        default=None,
+        description="Any specified dimensions, quantities, or volumes mentioned in the document."
+    )
+    details: str | None = Field(
+        default=None,
+        description="Additional technical or location specifics regarding the claim."
+    )
+
+
+class LocationInfo(BaseModel):
+    site_name: str | None = Field(default=None, description="Name or identifier of the project site.")
+    address: str | None = Field(default=None, description="Physical address or administrative area.")
+    latitude: float | None = Field(default=None, description="WGS84 latitude coordinate in decimal degrees.")
+    longitude: float | None = Field(default=None, description="WGS84 longitude coordinate in decimal degrees.")
+    bbox: list[float] | None = Field(
+        default=None,
+        description="Bounding box [min_lon, min_lat, max_lon, max_lat] in WGS84."
+    )
+
+
+class ExtractedProjectInfo(BaseModel):
+    project_name: str = Field(description="Name or contract title of the construction project.")
+    construction_type: str = Field(
+        description="Type of construction (e.g., Road construction, Building construction, Bridge, Pipeline)."
+    )
+    location: LocationInfo | None = Field(default=None, description="Site location information.")
+    start_date: str | None = Field(
+        default=None,
+        description="Start date of the work (YYYY-MM-DD or as stated in the document)."
+    )
+    completion_date: str | None = Field(
+        default=None,
+        description="Claimed completion date (YYYY-MM-DD or as stated in the document)."
+    )
+    claims: list[ConstructionClaim] = Field(
+        default_factory=list,
+        description="List of specific construction activities claimed to be completed."
+    )
+    missing_fields: list[str] = Field(
+        default_factory=list,
+        description="Critical fields that could not be found in the document."
+    )
+    uncertain_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields where extracted information has high ambiguity or uncertainty."
+    )
+
+
+class SceneMetadata(BaseModel):
+    scene_id: str
+    acquisition_date: str
+    cloud_cover_percent: float
+    site_cloud_cover_percent: float | None = None
+    asset_urls: dict[str, str] = Field(default_factory=dict)
+    local_rgb_path: str | None = None
+
+
+class SatelliteMetrics(BaseModel):
+    mean_ndvi_before: float = Field(default=0.0, description="Average NDVI value across the site prior to construction.")
+    mean_ndvi_after: float = Field(default=0.0, description="Average NDVI value across the site after claimed construction.")
+    delta_ndvi: float = Field(default=0.0, description="Difference in mean NDVI (after - before).")
+    mean_bsi_before: float | None = Field(default=None, description="Average Bare Soil Index before.")
+    mean_bsi_after: float | None = Field(default=None, description="Average Bare Soil Index after.")
+    delta_bsi: float | None = Field(default=None, description="Difference in Bare Soil Index (after - before).")
+    vegetation_loss_fraction: float = Field(
+        default=0.0,
+        description="Fraction of site area showing significant vegetation loss (e.g. delta_ndvi < -0.15)."
+    )
+    potential_disturbed_area_m2: float = Field(
+        default=0.0,
+        description="Estimated land disturbed area in square meters based on spectral changes."
+    )
+    valid_observation_coverage_pct: float = Field(
+        default=0.0,
+        description="Percentage of site pixels with cloud-free, high-quality data."
+    )
+    ndvi_diff_image_path: str | None = None
+    rgb_before_preview_path: str | None = None
+    rgb_after_preview_path: str | None = None
+
+
+class VisionClaimFinding(BaseModel):
+    claim: str = Field(description="The construction claim assessed.")
+    observed_changes: list[str] = Field(
+        default_factory=list,
+        description="Visible physical ground changes observed between the before and after satellite images."
+    )
+    supports_claim: bool | None = Field(
+        default=None,
+        description="True if visible evidence directly supports the observable claim, False if contradicted, None if inconclusive."
+    )
+    reasoning: str = Field(description="Evidence-based rationale for the assessment.")
+    limitations: list[str] = Field(
+        default_factory=list,
+        description="Satellite resolution, spectral, or temporal limitations (e.g. 10m Sentinel-2 pixel size, sub-surface invisibility)."
+    )
+
+
+class VisionAnalysisOutput(BaseModel):
+    findings: list[VisionClaimFinding] = Field(
+        default_factory=list,
+        description="Vision findings for each construction claim."
+    )
+    general_observations: str = Field(
+        default="",
+        description="General description of visible surface transformations on site."
+    )
+    vision_audit: "VisionExecutionAudit | None" = None
+
+
+class ClaimVerificationResult(BaseModel):
+    claim: str = Field(description="Claimed construction activity.")
+    status: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED"] = Field(
+        description="Verification outcome. SUPPORTED: visible evidence supports claim. NOT_SUPPORTED: contradictory evidence. INSUFFICIENT_EVIDENCE: inconclusive or requires higher resolution/on-site inspection. VISION_NOT_EXECUTED: image data missing or vision model failed."
+    )
+    observations: list[str] = Field(
+        default_factory=list,
+        description="Physical and spectral observations from satellite or drone imagery."
+    )
+    reason: str = Field(description="Detailed explanation justifying the status.")
+    limitations: list[str] = Field(
+        default_factory=list,
+        description="Physical, optical, or resolution constraints affecting the assessment."
+    )
+    recommended_next_action: str = Field(
+        description="Next operational step (e.g., Approve payment claim, Request drone inspection, Request physical engineering test)."
+    )
+
+
+class DroneVerificationFinding(BaseModel):
+    claim: str
+    observations: list[str]
+    supports_claim: bool | None
+    reasoning: str
+    limitations: list[str]
+
+
+class OfficerDecisionRecord(BaseModel):
+    case_id: str
+    decision: Literal["APPROVE", "REJECT", "REQUEST_INSPECTION", "HOLD"]
+    officer_name_or_id: str
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    notes: str | None = None
+
+
+class VerificationReport(BaseModel):
+    case_id: str
+    project_name: str
+    construction_type: str
+    location: dict[str, Any]
+    start_date: str | None = None
+    completion_date: str | None = None
+    overall_status: str
+    claims_summary: list[ClaimVerificationResult] = Field(default_factory=list)
+    satellite_metrics: SatelliteMetrics | None = None
+    requires_drone_verification: bool = False
+    drone_inspection_request: dict[str, Any] | None = None
+    drone_findings: list[DroneVerificationFinding] | None = None
+    officer_decision: OfficerDecisionRecord | None = None
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    audit_log: list[str] = Field(default_factory=list)
+
+
+class VisionExecutionAudit(BaseModel):
+    """Instrumentation recording exact parameters and proof of multimodal vision processing."""
+    before_scene_id: str | None = None
+    after_scene_id: str | None = None
+    before_acquisition_date: str | None = None
+    after_acquisition_date: str | None = None
+    raster_dimensions: tuple[int, int] | None = None
+    source_resolution_m: float = 10.0
+    rgb_image_dimensions: tuple[int, int] | None = None
+    image_mime_types: list[str] = Field(default_factory=lambda: ["image/png", "image/png"])
+    image_byte_lengths: list[int] = Field(default_factory=list)
+    both_images_included: bool = False
+    gemini_model_id: str | None = None
+    api_call_status: str = "NOT_ATTEMPTED"  # "SUCCESS", "FAILED", "NOT_ATTEMPTED"
+    error_message: str | None = None
+    parsed_response_status: str = "PENDING"  # "SUCCESS", "FAILED", "VISION_NOT_EXECUTED", "INSUFFICIENT_EVIDENCE"
+    vision_actually_executed: bool = False
+    execution_timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class DiscoveryCandidate(BaseModel):
+    """Georeferenced candidate area with identified land-cover or construction change."""
+    candidate_id: str
+    centroid: dict[str, float] = Field(description="Geographic center {'latitude': lat, 'longitude': lon}")
+    bbox: list[float] = Field(description="[min_lon, min_lat, max_lon, max_lat] in WGS84")
+    area_m2: float
+    area_hectares: float
+    mean_delta_ndvi: float
+    mean_delta_bsi: float
+    change_type: str = "Surface Disturbance / Construction Candidate"
+    geometry: dict[str, Any] = Field(description="GeoJSON geometry dictionary in EPSG:4326")
+    gemini_interpretation: str | None = None
+    confidence: float = 0.85
+
+
+class DiscoveryReport(BaseModel):
+    """Complete georeferenced report of independent construction discovery."""
+    discovery_id: str
+    area_name: str
+    center: dict[str, float]
+    radius_km: float
+    bounding_box: list[float]
+    before_scene_id: str
+    before_acquisition_date: str
+    before_cloud_cover_pct: float
+    after_scene_id: str
+    after_acquisition_date: str
+    after_cloud_cover_pct: float
+    crs: str
+    raster_shape: list[int]
+    resolution_m: float
+    total_disturbed_area_m2: float
+    total_disturbed_area_hectares: float
+    candidates_count: int
+    candidates: list[DiscoveryCandidate] = Field(default_factory=list)
+    gemini_vision_summary: str
+    vision_audit: VisionExecutionAudit
+    geojson_feature_collection: dict[str, Any] = Field(default_factory=dict)
+    rgb_before_path: str | None = None
+    rgb_after_path: str | None = None
+    change_mask_path: str | None = None
+    ndvi_diff_path: str | None = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+

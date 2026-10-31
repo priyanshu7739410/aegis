@@ -113,7 +113,14 @@ def get_model(model_name: AllModelEnum, /) -> ModelT:
             return ChatAnthropic(model_name=api_model_name, streaming=True)
         return ChatAnthropic(model_name=api_model_name, temperature=0.5, streaming=True)
     if model_name in GoogleModelName:
-        return ChatGoogleGenerativeAI(model=api_model_name, temperature=0.5, streaming=True)
+        google_key = settings.GOOGLE_API_KEY or settings.GEMINI_API_KEY
+        api_key = google_key.get_secret_value() if google_key else None
+        return ChatGoogleGenerativeAI(
+            model=api_model_name,
+            api_key=api_key,
+            temperature=0.5,
+            streaming=True,
+        )
     if model_name in VertexAIModelName:
         return ChatVertexAI(model=api_model_name, temperature=0.5, streaming=True)
     if model_name in GroqModelName:

@@ -2,7 +2,8 @@
     "python_version": "3.12",
     "dependencies": ["./src"],
     "graphs": {
-        "research_assistant": "./src/agents/research_assistant.py:research_assistant"
+        "research_assistant": "./src/agents/research_assistant.py:research_assistant",
+        "construction_verification": "./src/agents/construction_verification/graph.py:construction_verification_agent"
     },
     "env": "./.env"
 }

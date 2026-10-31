@@ -103,6 +103,15 @@ class Settings(BaseSettings):
 
     OPENWEATHERMAP_API_KEY: SecretStr | None = None
 
+    # Construction Verification Configuration
+    OCR_API_KEY: SecretStr | None = None
+    GEMINI_API_KEY: SecretStr | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    EARTH_SEARCH_URL: str = "https://earth-search.aws.element84.com/v1"
+    EARTH_SEARCH_COLLECTION: str = "sentinel-2-l2a"
+    MAX_CLOUD_COVER: float = 30.0
+    CONSTRUCTION_OUTPUT_DIR: str = "outputs/construction"
+
     # MCP Configuration
     GITHUB_PAT: SecretStr | None = None
     MCP_GITHUB_SERVER_URL: str = "https://api.githubcopilot.com/mcp/"
@@ -158,7 +167,7 @@ class Settings(BaseSettings):
             Provider.OPENAI_COMPATIBLE: self.COMPATIBLE_BASE_URL and self.COMPATIBLE_MODEL,
             Provider.DEEPSEEK: self.DEEPSEEK_API_KEY,
             Provider.ANTHROPIC: self.ANTHROPIC_API_KEY,
-            Provider.GOOGLE: self.GOOGLE_API_KEY,
+            Provider.GOOGLE: self.GOOGLE_API_KEY or self.GEMINI_API_KEY,
             Provider.VERTEXAI: self.GOOGLE_APPLICATION_CREDENTIALS,
             Provider.GROQ: self.GROQ_API_KEY,
             Provider.AWS: self.USE_AWS_BEDROCK,

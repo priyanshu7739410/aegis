@@ -59,6 +59,9 @@ dependencies = [
     "ddgs>=9.14.4",
     "ag-ui-langgraph~=0.0.42",
     "certifi>=2026.10.19",
+    "pystac-client>=0.9.0",
+    "shapely>=2.2.0",
+    "rasterio>=1.5.2",
 ]
 
 # Supply-chain cooldown: resolution only considers releases >=14 days old. Needs the

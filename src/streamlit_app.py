@@ -1,3 +1,8 @@
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 import asyncio
 import os
 import urllib.parse
@@ -12,6 +17,7 @@ from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage, UserThreads
 from schema.task_data import TaskData, TaskDataStatus
 from voice import VoiceManager
+from construction_ui import render_construction_verification_ui
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
 # The app has three main functions which are all run async:
@@ -68,6 +74,7 @@ async def main() -> None:
     st.set_page_config(
         page_title=APP_TITLE,
         page_icon=APP_ICON,
+        layout="wide",
         menu_items={},
     )
 
@@ -101,11 +108,38 @@ async def main() -> None:
         try:
             with st.spinner("Connecting to agent service..."):
                 st.session_state.agent_client = AgentClient(base_url=agent_url)
-        except AgentClientError as e:
-            st.error(f"Error connecting to agent service at {agent_url}: {e}")
-            st.markdown("The service might be booting up. Try again in a few seconds.")
+        except (AgentClientError, Exception) as e:
+            st.error(f"🚨 **Backend Connection Error**: Could not connect to agent service at `{agent_url}`.")
+            st.markdown(
+                f"**Error Details**: `{e}`\n\n"
+                "The FastAPI backend service is required for construction claim verification and agent tools, "
+                "but could not be reached. Please start the backend service:\n"
+                "```powershell\n"
+                "uv run python src/run_service.py\n"
+                "```"
+            )
             st.stop()
     agent_client: AgentClient = st.session_state.agent_client
+
+    # Determine default agent: prefer "construction-verification" when available in registry
+    agent_list = [a.key for a in agent_client.info.agents] if agent_client.info else []
+    default_agent = (
+        "construction-verification"
+        if "construction-verification" in agent_list
+        else (agent_client.info.default_agent if agent_client.info else "construction-verification")
+    )
+
+    # Resolve active agent: URL param ?agent= -> session state -> preferred default
+    url_agent = st.query_params.get("agent")
+    if url_agent and url_agent in agent_list:
+        active_agent = url_agent
+    elif "agent" in st.session_state and st.session_state.agent in agent_list:
+        active_agent = st.session_state.agent
+    else:
+        active_agent = default_agent
+        st.query_params["agent"] = active_agent
+
+    agent_client.agent = active_agent
 
     # Initialize voice manager (once per session)
     if "voice_manager" not in st.session_state:
@@ -152,11 +186,6 @@ async def main() -> None:
 
         with st.expander(":material/history: Previous Chats", expanded=False):
             try:
-                url_agent = st.query_params.get("agent")
-                if url_agent in [a.key for a in agent_client.info.agents]:
-                    agent_client.agent = url_agent
-                else:
-                    agent_client.agent = agent_client.info.default_agent
                 user_threads = fetch_user_threads_cached(
                     base_url=agent_client.base_url,
                     user_id=user_id,
@@ -188,8 +217,7 @@ async def main() -> None:
         with st.popover(":material/settings: Settings", use_container_width=True):
             model_idx = agent_client.info.models.index(agent_client.info.default_model)
             model = st.selectbox("LLM to use", options=agent_client.info.models, index=model_idx)
-            agent_list = [a.key for a in agent_client.info.agents]
-            agent_idx = agent_list.index(agent_client.info.default_agent)
+            agent_idx = agent_list.index(agent_client.agent) if agent_client.agent in agent_list else 0
             # Sync the selection to the ?agent= URL param (dropped when it's the default).
             agent_client.agent = st.selectbox(
                 "Agent to use",
@@ -218,6 +246,11 @@ async def main() -> None:
 
             # Display user ID (for debugging or user information)
             st.text_input("User ID (read-only)", value=user_id, disabled=True)
+
+        if agent_client.agent == "construction-verification":
+            st.success("🏗️ **Construction Verification Active**")
+        else:
+            st.info(f"🤖 **Active Agent:** `{agent_client.agent}`")
 
         @st.dialog("Architecture")
         def architecture_dialog() -> None:
@@ -264,6 +297,10 @@ async def main() -> None:
         )
 
     # Draw existing messages
+    if agent_client.agent == "construction-verification":
+        await render_construction_verification_ui(agent_client, voice=voice, enable_audio=enable_audio)
+        return
+
     messages: list[ChatMessage] = st.session_state.messages
 
     if len(messages) == 0:
@@ -277,6 +314,13 @@ async def main() -> None:
             case "rag-assistant":
                 WELCOME = """Hello! I'm an AI-powered Company Policy & HR assistant with access to AcmeTech's Employee Handbook.
                 I can help you find information about benefits, remote work, time-off policies, company values, and more. Ask me anything!"""
+            case "construction-verification":
+                WELCOME = (
+                    "👋 Welcome to the Construction Verification and Payment Approval System.\n\n"
+                    "I assist government officers in verifying contractor claims using OCR, Sentinel-2 satellite change detection, "
+                    "Gemini Vision, and drone inspection photography before final payment approval.\n\n"
+                    "Use the interactive dashboard above or ask questions directly in chat."
+                )
             case _:
                 WELCOME = "Hello! I'm an AI agent. Ask me anything!"
 

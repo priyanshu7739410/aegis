@@ -6,6 +6,9 @@ from langgraph.pregel import Pregel
 from agents.bg_task_agent.bg_task_agent import bg_task_agent
 from agents.chatbot import chatbot
 from agents.command_agent import command_agent
+from agents.construction_verification import construction_verification_agent
+from agents.construction_verification.discovery_graph import construction_discovery_agent
+from agents.custom_agent import custom_agent
 from agents.github_mcp_agent.github_mcp_agent import github_mcp_agent
 from agents.interrupt_agent import interrupt_agent
 from agents.knowledge_base_agent import kb_agent
@@ -33,6 +36,10 @@ class Agent:
 
 agents: dict[str, Agent] = {
     "chatbot": Agent(description="A simple chatbot.", graph_like=chatbot),
+    "custom-agent": Agent(
+        description="A customizable starter agent for today's build.",
+        graph_like=custom_agent,
+    ),
     "research-assistant": Agent(
         description="A research assistant with web search and calculator.",
         graph_like=research_assistant,
@@ -60,6 +67,14 @@ agents: dict[str, Agent] = {
     "github-mcp-agent": Agent(
         description="A GitHub agent with MCP tools for repository management and development workflows.",
         graph_like=github_mcp_agent,
+    ),
+    "construction-verification": Agent(
+        description="AI-powered construction claim verification and officer approval system using satellite and drone imagery.",
+        graph_like=construction_verification_agent,
+    ),
+    "construction-discovery": Agent(
+        description="Independent remote sensing construction discovery agent using multi-temporal Sentinel-2 and Gemini Vision.",
+        graph_like=construction_discovery_agent,
     ),
 }
 
