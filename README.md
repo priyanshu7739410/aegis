@@ -119,3 +119,7 @@ No code path turns an AI result into a payment. Each decision requires an office
 ## Other code in this repository
 
 This project grew from a general agent toolkit. `src/streamlit_app.py`, `src/construction_ui.py`, the FastAPI service, independent construction discovery and drone evaluation remain in the repository, but the dashboard does not load them. The older `src/construction_ui.py` still contains a demo case and a rule-based extraction fallback, so use it only for reference.
+
+## Deploying to Streamlit Community Cloud
+
+Set the main file path to `src/construction_app.py`. Dependencies come from `src/requirements.txt`, a trimmed list for the dashboard only. In the app's Secrets panel, set `USE_FAKE_MODEL`, `OCR_API_KEY`, `GEMINI_API_KEY` (the settings loader needs one recognised LLM key), `CONSTRUCTION_LLM_PROVIDER`, `CONSTRUCTION_AZURE_API_KEY`, `CONSTRUCTION_AZURE_ENDPOINT`, `CONSTRUCTION_AZURE_DEPLOYMENT` and `CONSTRUCTION_AZURE_VISION_DEPLOYMENT`. Uploads, reports and decisions are stored on the host's disk and can be lost when the app restarts.
