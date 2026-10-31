@@ -854,38 +854,16 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
             if not st.session_state.cv_satellite_metrics:
                 st.info("🔒 **Step 4 Locked**: Please fetch satellite images in Step 3 above first.")
             elif not st.session_state.cv_claims:
-                st.warning("⚠️ **Step 4: No Contractor Claims Found**\n\nSatellite imagery is ready, but no construction claims were found to verify. Click below to load claims and unlock Step 4:")
-                col_ul1, col_ul2 = st.columns(2)
-                with col_ul1:
-                    if st.button("⚡ Extract Claims from Document", type="primary", use_container_width=True):
-                        if st.session_state.cv_ocr_text:
-                            client = GeminiVerificationClient()
-                            info = client._fallback_extract_claims(st.session_state.cv_ocr_text)
-                            if info.claims:
-                                st.session_state.cv_claims = [c.model_dump() for c in info.claims]
-                        if not st.session_state.cv_claims:
-                            st.session_state.cv_claims = [
-                                {"activity": "Runway pavement construction (asphalt)", "claimed_status": "completed"},
-                                {"activity": "Site preparation and earthwork", "claimed_status": "completed"},
-                                {"activity": "Subgrade and soil stabilization", "claimed_status": "completed"},
-                                {"activity": "Granular sub-base and base layers", "claimed_status": "completed"},
-                                {"activity": "Drainage infrastructure", "claimed_status": "completed"},
-                            ]
-                        st.success(f"Loaded {len(st.session_state.cv_claims)} claims! Step 4 unlocked.")
+                # Auto-extract claims from OCR text if available
+                if st.session_state.cv_ocr_text:
+                    client = GeminiVerificationClient()
+                    info = client._fallback_extract_claims(st.session_state.cv_ocr_text)
+                    if info.claims:
+                        st.session_state.cv_claims = [c.model_dump() for c in info.claims]
+                        st.success(f"Auto-extracted {len(st.session_state.cv_claims)} construction claims from document.")
                         st.rerun()
-                with col_ul2:
-                    if st.button("📋 Load Jewar Airport Runway Claims", use_container_width=True):
-                        st.session_state.cv_claims = [
-                            {"activity": "Runway pavement construction (asphalt)", "claimed_status": "completed"},
-                            {"activity": "Site preparation and earthwork", "claimed_status": "completed"},
-                            {"activity": "Subgrade and soil stabilization", "claimed_status": "completed"},
-                            {"activity": "Granular sub-base and base layers", "claimed_status": "completed"},
-                            {"activity": "Drainage infrastructure", "claimed_status": "completed"},
-                            {"activity": "Electrical and runway lighting", "claimed_status": "completed"},
-                            {"activity": "Runway markings and finishing", "claimed_status": "completed"},
-                        ]
-                        st.success("Loaded 7 Jewar runway claims! Step 4 unlocked.")
-                        st.rerun()
+
+                st.warning("⚠️ **No construction claims found.** Add claims in Step 2 above, or type them in the claims text box and click Save.")
             else:
                 if st.button("🤖 Run Gemini AI Claim Analysis", type="primary", use_container_width=True):
                     with st.spinner("Gemini Vision is evaluating claims against visible satellite evidence..."):
