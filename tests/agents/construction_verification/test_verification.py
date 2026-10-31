@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import MagicMock, patch
 from langchain_core.runnables import RunnableConfig
 
 from agents.construction_verification.nodes.drone_eval import drone_eval_node
@@ -89,7 +90,20 @@ async def test_drone_verification_routing_and_reevaluation(tmp_path):
         "drone_image_paths": [str(fake_drone_img)],
     }
 
-    drone_res = await drone_eval_node(drone_state, RunnableConfig())
+    mock_drone_findings = {
+        "findings": [
+            {
+                "claim": "Culvert foundation excavation and rebar cage tying",
+                "supports_claim": "SUPPORTED",
+                "observations": "Drone photography clearly displays completed culvert foundation and tied rebar cages.",
+                "limitations": [],
+            }
+        ],
+        "general_observations": "Drone photography confirms completed culvert work.",
+        "audit": MagicMock(),
+    }
+    with patch.object(GeminiVerificationClient, "analyze_drone_imagery", return_value=mock_drone_findings):
+        drone_res = await drone_eval_node(drone_state, RunnableConfig())
     assert drone_res["verification_results"][0]["status"] == VerificationStatus.SUPPORTED.value
     assert "drone" in drone_res["overall_status"].lower()
 

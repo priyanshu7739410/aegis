@@ -787,11 +787,11 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                                 officer_name_or_id=officer_id.strip(),
                                 notes=dec_notes,
                             )
-                        st.session_state.cv_decision_record = res.get("decision_record")
-                        st.success(f"✅ Official Decision Recorded: `{sel_dec}`!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to record decision: {e}")
+                            st.session_state.cv_decision_record = res.get("decision_record")
+                            st.success(f"✅ Official Decision Recorded: `{sel_dec}`!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to record decision: {e}")
 
                 if st.session_state.cv_decision_record:
                     st.markdown("#### 📜 Official Audit Certificate")

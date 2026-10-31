@@ -57,6 +57,13 @@ def route_entry(
         if is_verify and has_location_dates:
             return "satellite_search"
 
+        # If user explicitly requested verification but claims/location are not yet extracted, prioritize extraction
+        if is_verify and not state.get("bounding_box") and not state.get("construction_claims"):
+            if state.get("extracted_text"):
+                return "extract_claims"
+            if state.get("pdf_path") or state.get("image_path"):
+                return "ocr"
+
         # Otherwise handle through chat handler (extracts inline coords/dates or answers inquiry)
         return "chat_handler"
 

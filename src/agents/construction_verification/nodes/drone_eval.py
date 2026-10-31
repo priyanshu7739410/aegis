@@ -42,7 +42,8 @@ async def drone_eval_node(
         drone_image_paths=drone_images,
     )
 
-    drone_findings_dicts = [f.model_dump() for f in drone_findings]
+    raw_list = drone_findings.get("findings", []) if isinstance(drone_findings, dict) else drone_findings
+    drone_findings_dicts = [f.model_dump() if hasattr(f, "model_dump") else f for f in raw_list]
 
     # Update verification results with drone evidence
     updated_results: list[dict[str, Any]] = []
@@ -63,11 +64,14 @@ async def drone_eval_node(
                 st_val = VerificationStatus.INSUFFICIENT_EVIDENCE.value
                 rec_act = "Inspection photograph remains inconclusive for this specific claim. Physical test certificate required."
 
+            obs_drone = matching_finding.get("observations")
+            extra_obs = obs_drone if isinstance(obs_drone, list) else ([obs_drone] if obs_drone else [])
+
             new_r = ClaimVerificationResult(
                 claim=r["claim"],
                 status=st_val,
-                observations=r.get("observations", []) + matching_finding.get("observations", []),
-                reason=f"Satellite observation supplemented by photo inspection: {matching_finding.get('reasoning')}",
+                observations=list(r.get("observations") or []) + extra_obs,
+                reason=f"Satellite observation supplemented by photo inspection: {matching_finding.get('reasoning') or matching_finding.get('observations')}",
                 limitations=matching_finding.get("limitations", []),
                 recommended_next_action=rec_act,
             )
