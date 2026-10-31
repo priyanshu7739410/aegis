@@ -58,13 +58,17 @@ async def satellite_analysis_node(
         logger.error(err)
         return {
             "errors": errors + [err],
-            "messages": [AIMessage(content=err)],
+            "satellite_error": str(e),
+            "satellite_metrics": None,
+            "messages": [AIMessage(content=f"⚠️ Satellite Analysis Failed: {e}")],
         }
     except Exception as e:
         err = f"Unexpected error during satellite analysis: {e}"
         logger.error(err)
         return {
             "errors": errors + [err],
-            "messages": [AIMessage(content=err)],
+            "satellite_error": str(e),
+            "satellite_metrics": None,
+            "messages": [AIMessage(content=f"⚠️ Satellite Analysis Error: {e}")],
         }
 

@@ -223,3 +223,65 @@ def test_output_includes_provenance_and_geojson_polygons(tmp_path):
         assert "geometry" in feat
         assert "candidate_id" in feat["properties"]
         assert "area_m2" in feat["properties"]
+
+
+def test_real_bsi_calculation_with_known_arrays(tmp_path):
+    """Test 7: BSI and mean_delta_bsi are computed dynamically from actual SWIR/Red/NIR/Blue bands, not hardcoded."""
+    service = ConstructionDiscoveryService(output_dir=tmp_path)
+
+    # 1. Direct unit verification of calculate_bsi
+    swir = np.array([[2000.0, 1000.0]], dtype=np.float32)
+    red = np.array([[1000.0, 500.0]], dtype=np.float32)
+    nir = np.array([[500.0, 2000.0]], dtype=np.float32)
+    blue = np.array([[500.0, 500.0]], dtype=np.float32)
+
+    bsi = service.calculate_bsi(swir, red, nir, blue)
+    # Pixel 0: ((2000+1000) - (500+500)) / ((2000+1000) + (500+500)) = (3000 - 1000) / (3000 + 1000) = 2000 / 4000 = 0.50
+    # Pixel 1: ((1000+500) - (2000+500)) / ((1000+500) + (2000+500)) = (1500 - 2500) / (1500 + 2500) = -1000 / 4000 = -0.25
+    assert np.isclose(bsi[0, 0], 0.50, atol=1e-3)
+    assert np.isclose(bsi[0, 1], -0.25, atol=1e-3)
+
+    # 2. Integration verification in _detect_changes: delta_bsi calculation
+    shape = (50, 50)
+    # Before: dense vegetation / low bare soil
+    # BSI1 should be negative
+    sw1 = np.full(shape, 800.0, dtype=np.float32)
+    r1 = np.full(shape, 400.0, dtype=np.float32)
+    n1 = np.full(shape, 2400.0, dtype=np.float32)
+    b1 = np.full(shape, 400.0, dtype=np.float32)
+    # Before BSI = (1200 - 2800) / (1200 + 2800) = -1600 / 4000 = -0.40
+
+    # After: bare cleared ground / construction
+    # BSI2 should be positive
+    sw2 = np.full(shape, 2400.0, dtype=np.float32)
+    r2 = np.full(shape, 1200.0, dtype=np.float32)
+    n2 = np.full(shape, 800.0, dtype=np.float32)
+    b2 = np.full(shape, 600.0, dtype=np.float32)
+    # After BSI = (3600 - 1400) / (3600 + 1400) = 2200 / 5000 = 0.44
+
+    # Delta BSI expected = 0.44 - (-0.40) = 0.84 (definitely NOT hardcoded 0.18!)
+    scl1 = np.full(shape, 4, dtype=np.uint8)
+    scl2 = np.full(shape, 4, dtype=np.uint8)
+
+    aligned_data = {
+        "r1": r1, "g1": r1, "b1": b1, "n1": n1, "sw1": sw1, "scl1": scl1,
+        "r2": r2, "g2": r2, "b2": b2, "n2": n2, "sw2": sw2, "scl2": scl2,
+        "shape": shape,
+        "crs": "EPSG:4326",
+        "transform": rasterio.transform.from_origin(77.56, 28.215, 0.001, 0.001),
+    }
+
+    detection = service._detect_changes(
+        aligned_data=aligned_data,
+        bbox_wgs84=[77.56, 28.125, 77.66, 28.215],
+        min_change_area_m2=100.0,
+        run_dir=tmp_path,
+    )
+
+    candidates = detection["candidates"]
+    assert len(candidates) >= 1
+    cand = candidates[0]
+    # Check that candidate delta BSI matches calculated value around 0.84, NOT 0.18
+    assert abs(cand["mean_delta_bsi"] - 0.84) < 0.05
+    assert cand["mean_delta_bsi"] != 0.18
+

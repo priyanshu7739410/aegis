@@ -764,7 +764,7 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
 
                 col_dec1, col_dec2 = st.columns(2)
                 with col_dec1:
-                    officer_id = st.text_input("Officer ID", value="GOV-OFFICER-482")
+                    officer_id = st.text_input("Officer ID", value="", placeholder="e.g. PWD-OFFICER-104")
                     decision_options = [
                         OfficerDecisionType.APPROVE.value,
                         OfficerDecisionType.REQUEST_INSPECTION.value,
@@ -777,13 +777,16 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                     dec_notes = st.text_area("Findings & Justification", value=rec["default_notes"], height=100)
 
                 if st.button("⚖️ Confirm & Record Official Decision", type="primary", use_container_width=True):
-                    try:
-                        res = agent_client.record_officer_decision(
-                            case_id=st.session_state.cv_case_id,
-                            decision=sel_dec,
-                            officer_name_or_id=officer_id,
-                            notes=dec_notes,
-                        )
+                    if not officer_id.strip():
+                        st.error("Please enter an Officer ID to authorize this audit certificate.")
+                    else:
+                        try:
+                            res = agent_client.record_officer_decision(
+                                case_id=st.session_state.cv_case_id,
+                                decision=sel_dec,
+                                officer_name_or_id=officer_id.strip(),
+                                notes=dec_notes,
+                            )
                         st.session_state.cv_decision_record = res.get("decision_record")
                         st.success(f"✅ Official Decision Recorded: `{sel_dec}`!")
                         st.rerun()

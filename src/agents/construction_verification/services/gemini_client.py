@@ -16,6 +16,7 @@ from agents.construction_verification.prompts import (
 from PIL import Image
 from agents.construction_verification.schemas import (
     ConstructionClaim,
+    DroneAnalysisOutput,
     DroneVerificationFinding,
     ExtractedProjectInfo,
     LocationInfo,
@@ -421,12 +422,45 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
         claims: list[dict[str, Any]],
         drone_image_paths: list[str],
     ) -> list[DroneVerificationFinding]:
-        """Analyze high-resolution drone or on-site photographs against unresolved claims."""
-        if not self.api_key or settings.USE_FAKE_MODEL or not drone_image_paths:
-            return self._fallback_drone_eval(claims, drone_image_paths)
+        """Analyze high-resolution drone or on-site photographs against unresolved claims using structured multimodal vision."""
+        if not drone_image_paths:
+            return [
+                DroneVerificationFinding(
+                    claim=c.get("activity", "Unknown"),
+                    observations=[],
+                    supports_claim="VISION_NOT_EXECUTED",
+                    reasoning="VISION_NOT_EXECUTED: No on-site or drone inspection photographs were provided.",
+                    limitations=["Missing inspection imagery."],
+                )
+                for c in claims
+            ]
 
         valid_images = [p for p in drone_image_paths if Path(p).exists()]
         if not valid_images:
+            return [
+                DroneVerificationFinding(
+                    claim=c.get("activity", "Unknown"),
+                    observations=[],
+                    supports_claim="VISION_NOT_EXECUTED",
+                    reasoning="VISION_NOT_EXECUTED: Specified inspection image files were not found on disk.",
+                    limitations=["Missing image files."],
+                )
+                for c in claims
+            ]
+
+        if not self.api_key and not settings.USE_FAKE_MODEL:
+            return [
+                DroneVerificationFinding(
+                    claim=c.get("activity", "Unknown"),
+                    observations=[],
+                    supports_claim="VISION_NOT_EXECUTED",
+                    reasoning="VISION_NOT_EXECUTED: GEMINI_API_KEY is not configured.",
+                    limitations=["API credentials missing."],
+                )
+                for c in claims
+            ]
+
+        if settings.USE_FAKE_MODEL:
             return self._fallback_drone_eval(claims, drone_image_paths)
 
         # Build prompt and image parts
@@ -434,17 +468,19 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             {
                 "type": "text",
                 "text": (
-                    f"Evaluate these on-site / drone inspection photos against the unresolved claims:\n"
-                    + "\n".join([f"- {c.get('activity')}" for c in claims])
+                    f"You are evaluating high-resolution on-site inspection photographs against the following claims:\n"
+                    + "\n".join([f"- Claim: {c.get('activity')}" for c in claims])
+                    + "\n\nFor each claim, determine whether the physical photograph supports the claim, contradicts it, or provides insufficient evidence. Never invent observations."
                 ),
             }
         ]
 
         for p in valid_images[:4]:  # limit to 4 images
             b64_img = encode_image_base64(p)
+            mime = "image/png" if Path(p).suffix.lower() == ".png" else "image/jpeg"
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+                "image_url": {"url": f"data:{mime};base64,{b64_img}"},
             })
 
         messages = [
@@ -452,27 +488,60 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
             HumanMessage(content=content),
         ]
 
-        # Use structured LLM or parse findings
         try:
-            llm = self._get_llm()
-            resp = await llm.ainvoke(messages)
-            text_resp = resp.content if hasattr(resp, "content") else str(resp)
-            findings: list[DroneVerificationFinding] = []
-            for c in claims:
-                act = c.get("activity", "Unknown")
-                findings.append(
+            llm = self._get_llm(DroneAnalysisOutput)
+            if llm is None:
+                return [
                     DroneVerificationFinding(
-                        claim=act,
-                        observations=["Close-up photographic inspection evidence reviewed."],
-                        supports_claim=True,
-                        reasoning=f"High-resolution inspection evidence visible for {act}.",
-                        limitations=["Sub-surface structural engineering properties remain unverified by surface photo alone."],
+                        claim=c.get("activity", "Unknown"),
+                        observations=[],
+                        supports_claim="VISION_NOT_EXECUTED",
+                        reasoning="VISION_NOT_EXECUTED: Model could not be instantiated.",
+                        limitations=["Model initialization failed."],
                     )
-                )
-            return findings
+                    for c in claims
+                ]
+
+            resp = await llm.ainvoke(messages)
+            if isinstance(resp, DroneAnalysisOutput):
+                parsed_findings = resp.findings
+            elif isinstance(resp, dict):
+                parsed_findings = DroneAnalysisOutput(**resp).findings
+            else:
+                parsed_findings = []
+
+            # Ensure every claim has a corresponding finding
+            claim_map = {f.claim.strip().lower(): f for f in parsed_findings}
+            final_findings: list[DroneVerificationFinding] = []
+            for c in claims:
+                act = c.get("activity", "Unknown").strip()
+                match = claim_map.get(act.lower())
+                if match:
+                    final_findings.append(match)
+                else:
+                    final_findings.append(
+                        DroneVerificationFinding(
+                            claim=act,
+                            observations=["Claim not specifically resolved in photographic analysis."],
+                            supports_claim="INSUFFICIENT_EVIDENCE",
+                            reasoning="Inspection photograph did not contain verifiable evidence for this specific activity.",
+                            limitations=["Occluded or omitted from camera angle."],
+                        )
+                    )
+            return final_findings
+
         except Exception as e:
-            logger.warning(f"Drone vision analysis failed: {e}. Using deterministic fallback.")
-            return self._fallback_drone_eval(claims, drone_image_paths)
+            logger.error(f"Drone vision analysis failed: {e}")
+            return [
+                DroneVerificationFinding(
+                    claim=c.get("activity", "Unknown"),
+                    observations=[],
+                    supports_claim="VISION_NOT_EXECUTED",
+                    reasoning=f"VISION_NOT_EXECUTED: Inspection vision model failed ({e}).",
+                    limitations=["Vision API call error."],
+                )
+                for c in claims
+            ]
 
     def _fallback_extract_claims(self, text: str) -> ExtractedProjectInfo:
         """Deterministic heuristic extraction from text."""
@@ -655,22 +724,23 @@ Be factual, objective, and describe actual visual pixel differences. Do not inve
     def _fallback_drone_eval(
         self, claims: list[dict[str, Any]], drone_image_paths: list[str]
     ) -> list[DroneVerificationFinding]:
-        """Deterministic fallback for high-resolution drone photo inspection."""
+        """Deterministic fallback for test suites and offline mock mode."""
         findings: list[DroneVerificationFinding] = []
         for c in claims:
             act = c.get("activity", "")
+            is_culvert = any(kw in act.lower() for kw in ["culvert", "drain", "pipe"])
             findings.append(
                 DroneVerificationFinding(
                     claim=act,
                     observations=[
-                        f"High-resolution drone photographic evidence received ({len(drone_image_paths)} images).",
-                        f"Visible physical evidence of {act} observed on the project site.",
+                        f"Photographic inspection evidence evaluated ({len(drone_image_paths)} images).",
+                        f"Physical surface indicators of {act} checked.",
                     ],
-                    supports_claim=True,
-                    reasoning=f"Drone photograph provides direct visual confirmation of physical work completed on {act}.",
+                    supports_claim="INSUFFICIENT_EVIDENCE" if is_culvert else "SUPPORTED",
+                    reasoning=f"Photographic verification evaluation completed for {act}.",
                     limitations=[
-                        "Drone optical photograph verifies surface appearance only.",
-                        "Material strength, compaction density, and internal structural tests require physical laboratory certificates.",
+                        "Optical photograph verifies surface appearance only.",
+                        "Material strength and internal structural tests require physical laboratory certificates.",
                     ],
                 )
             )

@@ -48,14 +48,28 @@ async def drone_eval_node(
     updated_results: list[dict[str, Any]] = []
     for r in existing_results:
         matching_finding = next((df for df in drone_findings_dicts if df["claim"] == r["claim"]), None)
-        if matching_finding and matching_finding.get("supports_claim"):
+        if matching_finding:
+            sup = matching_finding.get("supports_claim")
+            if sup in ("SUPPORTED", "supported", True):
+                st_val = VerificationStatus.SUPPORTED.value
+                rec_act = "Photographic inspection verified physical work. Officer may consider payment approval."
+            elif sup in ("NOT_SUPPORTED", "not_supported", False):
+                st_val = VerificationStatus.NOT_SUPPORTED.value
+                rec_act = "Photographic inspection contradicted claim. Recommend halting payment or requesting contractor clarification."
+            elif sup in ("VISION_NOT_EXECUTED",):
+                st_val = VerificationStatus.VISION_NOT_EXECUTED.value
+                rec_act = "Inspection vision analysis could not be executed. Upload valid photos or perform manual audit."
+            else:
+                st_val = VerificationStatus.INSUFFICIENT_EVIDENCE.value
+                rec_act = "Inspection photograph remains inconclusive for this specific claim. Physical test certificate required."
+
             new_r = ClaimVerificationResult(
                 claim=r["claim"],
-                status=VerificationStatus.SUPPORTED.value,
+                status=st_val,
                 observations=r.get("observations", []) + matching_finding.get("observations", []),
-                reason=f"Satellite observation was supplemented by drone inspection: {matching_finding.get('reasoning')}",
+                reason=f"Satellite observation supplemented by photo inspection: {matching_finding.get('reasoning')}",
                 limitations=matching_finding.get("limitations", []),
-                recommended_next_action="Drone inspection verified visible physical work. Officer may consider payment approval.",
+                recommended_next_action=rec_act,
             )
             updated_results.append(new_r.model_dump())
         else:

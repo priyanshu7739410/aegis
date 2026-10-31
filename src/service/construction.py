@@ -366,6 +366,8 @@ async def run_case_verification(case_id: str) -> dict[str, Any]:
         # Update case record with results
         if "satellite_metrics" in result and result["satellite_metrics"]:
             case_record["satellite_metrics"] = result["satellite_metrics"]
+        if "satellite_error" in result and result["satellite_error"]:
+            case_record["satellite_error"] = result["satellite_error"]
         if "before_scene" in result and result["before_scene"]:
             case_record["before_scene"] = result["before_scene"]
         if "after_scene" in result and result["after_scene"]:

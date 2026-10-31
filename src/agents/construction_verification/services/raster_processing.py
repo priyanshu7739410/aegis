@@ -63,36 +63,36 @@ class RasterProcessor:
         target_shape: tuple[int, int] | None = None,
     ) -> tuple[np.ndarray, Any]:
         """Perform a windowed read of a specific bounding box from a raster asset."""
-        if asset_url.startswith("mock://") or settings.USE_FAKE_MODEL:
-            # Return synthetic band
+        if asset_url.startswith("mock://") or (settings.USE_FAKE_MODEL and not asset_url.startswith("http")):
+            # Return synthetic band in tests/mock only
             shape = target_shape or (100, 100)
             return np.ones(shape, dtype=np.float32) * 1000.0, None
 
         min_lon, min_lat, max_lon, max_lat = bbox_wgs84
         try:
-            with rasterio.open(asset_url) as src:
-                # Transform bbox from WGS84 (EPSG:4326) to dataset CRS
-                bounds_native = transform_bounds(
-                    "EPSG:4326", src.crs, min_lon, min_lat, max_lon, max_lat
-                )
-                window = from_bounds(*bounds_native, transform=src.transform)
-
-                if target_shape:
-                    data = src.read(
-                        1,
-                        window=window,
-                        out_shape=target_shape,
-                        resampling=Resampling.bilinear,
-                        boundless=True,
+            with rasterio.Env(AWS_NO_SIGN_REQUEST="YES", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", VSI_CACHE=True):
+                with rasterio.open(asset_url) as src:
+                    # Transform bbox from WGS84 (EPSG:4326) to dataset CRS
+                    bounds_native = transform_bounds(
+                        "EPSG:4326", src.crs, min_lon, min_lat, max_lon, max_lat
                     )
-                else:
-                    data = src.read(1, window=window, boundless=True)
+                    window = from_bounds(*bounds_native, transform=src.transform)
 
-                return data.astype(np.float32), src.transform
+                    if target_shape:
+                        data = src.read(
+                            1,
+                            window=window,
+                            out_shape=target_shape,
+                            resampling=Resampling.bilinear,
+                            boundless=True,
+                        )
+                    else:
+                        data = src.read(1, window=window, boundless=True)
+
+                    return data.astype(np.float32), src.transform
         except Exception as e:
-            logger.warning(f"Failed window read on {asset_url}: {e}. Falling back to synthetic array.")
-            shape = target_shape or (100, 100)
-            return np.ones(shape, dtype=np.float32) * 1000.0, None
+            logger.error(f"Failed window read on {asset_url}: {e}")
+            raise RasterProcessingError(f"Failed to read satellite band from {asset_url}: {e}") from e
 
     def analyze_change(
         self,
@@ -113,9 +113,12 @@ class RasterProcessor:
 
         is_mock = (
             settings.USE_FAKE_MODEL
-            or not b_assets
             or any(url.startswith("mock://") for url in b_assets.values())
+            or any(url.startswith("mock://") for url in a_assets.values())
         )
+
+        if not is_mock and (not b_assets or not a_assets):
+            raise RasterProcessingError("Missing band assets for Sentinel-2 scene.")
 
         if is_mock:
             # Generate controlled deterministic arrays representing vegetation -> clearing
@@ -161,8 +164,9 @@ class RasterProcessor:
         valid_coverage_pct = round((valid_pixels / total_pixels) * 100.0, 2)
 
         if valid_pixels == 0:
-            logger.warning("Site is completely obscured by clouds or invalid pixels in one or both scenes.")
-            valid_mask = np.ones(target_shape, dtype=bool)  # Fallback to avoid division by zero
+            raise RasterProcessingError(
+                "Site is completely obscured by clouds or invalid pixels in Sentinel-2 imagery; no valid cloud-free pixels available."
+            )
 
         # Compute NDVI
         b_ndvi = self.calculate_ndvi(b_nir, b_red)

@@ -156,10 +156,15 @@ class ClaimVerificationResult(BaseModel):
 
 class DroneVerificationFinding(BaseModel):
     claim: str
-    observations: list[str]
-    supports_claim: bool | None
+    observations: list[str] = Field(default_factory=list)
+    supports_claim: Literal["SUPPORTED", "NOT_SUPPORTED", "INSUFFICIENT_EVIDENCE", "VISION_NOT_EXECUTED"]
     reasoning: str
-    limitations: list[str]
+    limitations: list[str] = Field(default_factory=list)
+
+
+class DroneAnalysisOutput(BaseModel):
+    findings: list[DroneVerificationFinding] = Field(default_factory=list)
+    general_observations: str | None = None
 
 
 class OfficerDecisionRecord(BaseModel):
@@ -220,7 +225,7 @@ class DiscoveryCandidate(BaseModel):
     change_type: str = "Surface Disturbance / Construction Candidate"
     geometry: dict[str, Any] = Field(description="GeoJSON geometry dictionary in EPSG:4326")
     gemini_interpretation: str | None = None
-    confidence: float = 0.85
+    confidence: float | None = Field(default=None, description="Confidence score if computed or evaluated by model")
 
 
 class DiscoveryReport(BaseModel):

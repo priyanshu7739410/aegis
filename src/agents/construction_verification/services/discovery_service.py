@@ -45,6 +45,23 @@ class ConstructionDiscoveryService:
         self.gemini_client = GeminiVerificationClient()
 
     @staticmethod
+    def calculate_bsi(
+        swir: np.ndarray, red: np.ndarray, nir: np.ndarray, blue: np.ndarray
+    ) -> np.ndarray:
+        """Compute Bare Soil Index: ((SWIR + Red) - (NIR + Blue)) / ((SWIR + Red) + (NIR + Blue))."""
+        swir_f = swir.astype(np.float32)
+        red_f = red.astype(np.float32)
+        nir_f = nir.astype(np.float32)
+        blue_f = blue.astype(np.float32)
+
+        numerator = (swir_f + red_f) - (nir_f + blue_f)
+        denominator = (swir_f + red_f) + (nir_f + blue_f)
+        denominator = np.where(denominator == 0, 1e-7, denominator)
+
+        bsi = numerator / denominator
+        return np.clip(bsi, -1.0, 1.0)
+
+    @staticmethod
     def calculate_bounding_box(lat: float, lon: float, radius_km: float = 5.0) -> list[float]:
         """Compute WGS84 bounding box [min_lon, min_lat, max_lon, max_lat] for a centroid and radius."""
         delta_lat = radius_km / 111.0
@@ -164,7 +181,7 @@ class ConstructionDiscoveryService:
                     change_type=c.get("change_type", "Surface Disturbance / Construction Candidate"),
                     geometry=c["geometry"],
                     gemini_interpretation=interp,
-                    confidence=c.get("confidence", 0.85),
+                    confidence=c.get("confidence"),
                 )
             )
 
@@ -268,6 +285,10 @@ class ConstructionDiscoveryService:
             r2[200:250, 100:400] = 1600.0
             n2[200:250, 100:400] = 1200.0
 
+            sw1 = np.full(shape_grid, 800.0, dtype=np.float32)
+            sw2 = np.full(shape_grid, 2200.0, dtype=np.float32)
+            sw2[200:250, 100:400] = 2600.0
+
             # Derive transform
             dx = (bbox_wgs84[2] - bbox_wgs84[0]) / shape_grid[1]
             dy = (bbox_wgs84[3] - bbox_wgs84[1]) / shape_grid[0]
@@ -275,8 +296,8 @@ class ConstructionDiscoveryService:
             crs_str = "EPSG:4326"
 
             return {
-                "r1": r1, "g1": g1, "b1": b1, "n1": n1, "scl1": scl1,
-                "r2": r2, "g2": g2, "b2": b2, "n2": n2, "scl2": scl2,
+                "r1": r1, "g1": g1, "b1": b1, "n1": n1, "sw1": sw1, "scl1": scl1,
+                "r2": r2, "g2": g2, "b2": b2, "n2": n2, "sw2": sw2, "scl2": scl2,
                 "shape": shape_grid,
                 "crs": crs_str,
                 "transform": win_transform,
@@ -300,16 +321,24 @@ class ConstructionDiscoveryService:
             b1, _, _ = read_asset(b_assets["blue"], target_shape=target_shape)
             n1, _, _ = read_asset(b_assets["nir"], target_shape=target_shape)
             scl1, _, _ = read_asset(b_assets["scl"], target_shape=target_shape, resampling=Resampling.nearest)
+            sw1 = None
+            b_swir_url = b_assets.get("swir16") or b_assets.get("swir22") or b_assets.get("B11")
+            if b_swir_url:
+                sw1, _, _ = read_asset(b_swir_url, target_shape=target_shape, resampling=Resampling.bilinear)
 
             r2, _, _ = read_asset(a_assets["red"], target_shape=target_shape)
             g2, _, _ = read_asset(a_assets["green"], target_shape=target_shape)
             b2, _, _ = read_asset(a_assets["blue"], target_shape=target_shape)
             n2, _, _ = read_asset(a_assets["nir"], target_shape=target_shape)
             scl2, _, _ = read_asset(a_assets["scl"], target_shape=target_shape, resampling=Resampling.nearest)
+            sw2 = None
+            a_swir_url = a_assets.get("swir16") or a_assets.get("swir22") or a_assets.get("B11")
+            if a_swir_url:
+                sw2, _, _ = read_asset(a_swir_url, target_shape=target_shape, resampling=Resampling.bilinear)
 
         return {
-            "r1": r1, "g1": g1, "b1": b1, "n1": n1, "scl1": scl1,
-            "r2": r2, "g2": g2, "b2": b2, "n2": n2, "scl2": scl2,
+            "r1": r1, "g1": g1, "b1": b1, "n1": n1, "sw1": sw1, "scl1": scl1,
+            "r2": r2, "g2": g2, "b2": b2, "n2": n2, "sw2": sw2, "scl2": scl2,
             "shape": target_shape,
             "crs": str(crs_obj),
             "transform": win_transform,
@@ -348,6 +377,15 @@ class ConstructionDiscoveryService:
         ndvi2 = (n2 - r2) / (n2 + r2 + 1e-7)
         delta_ndvi = ndvi2 - ndvi1
 
+        # Bare Soil Index (BSI) calculation if SWIR is available
+        sw1 = aligned_data.get("sw1")
+        sw2 = aligned_data.get("sw2")
+        delta_bsi = None
+        if sw1 is not None and sw2 is not None:
+            bsi1 = self.calculate_bsi(sw1, r1, n1, b1)
+            bsi2 = self.calculate_bsi(sw2, r2, n2, b2)
+            delta_bsi = bsi2 - bsi1
+
         # Candidate change mask: significant vegetation loss on valid pixels
         change_mask = (delta_ndvi < -0.15) & valid_mask
         disturbed_pixels = int(np.sum(change_mask))
@@ -384,6 +422,22 @@ class ConstructionDiscoveryService:
             if area_m2 < min_change_area_m2:
                 continue
 
+            # Create a raster mask for this candidate to calculate exact per-candidate statistics
+            poly_mask = rasterio.features.geometry_mask(
+                [geom_native],
+                out_shape=aligned_data["shape"],
+                transform=win_transform,
+                invert=True,
+            )
+            poly_valid = poly_mask & valid_mask
+
+            if np.any(poly_valid):
+                cand_delta_ndvi = round(float(np.mean(delta_ndvi[poly_valid])), 4)
+                cand_delta_bsi = round(float(np.mean(delta_bsi[poly_valid])), 4) if delta_bsi is not None else 0.0
+            else:
+                cand_delta_ndvi = round(float(np.mean(delta_ndvi[change_mask])), 4)
+                cand_delta_bsi = 0.0
+
             # Transform geometry to EPSG:4326
             if "4326" not in crs_str:
                 geom_wgs84 = transform_geom(crs_str, "EPSG:4326", geom_native)
@@ -400,8 +454,8 @@ class ConstructionDiscoveryService:
                 "bbox": [round(b, 6) for b in b_bounds],
                 "area_m2": round(area_m2, 1),
                 "area_hectares": round(area_m2 / 10000.0, 2),
-                "mean_delta_ndvi": round(float(np.mean(delta_ndvi[change_mask])), 4),
-                "mean_delta_bsi": 0.18,
+                "mean_delta_ndvi": cand_delta_ndvi,
+                "mean_delta_bsi": cand_delta_bsi,
                 "change_type": "Surface Disturbance / Construction Candidate",
                 "geometry": geom_wgs84,
             })
