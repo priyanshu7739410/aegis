@@ -331,6 +331,18 @@ def test_08_synthetic_arrays_produce_correct_ndvi(production):
     assert metrics["delta_bsi"] is not None
 
 
+def test_08a_declared_offset_metadata_is_not_subtracted_from_pixels(production):
+    processor = RasterProcessor(output_dir=production)
+    before = scene_fixture("S2_BEFORE", "2024-01-05")
+    after = scene_fixture("S2_AFTER", "2024-06-25")
+    before["properties"]["raster_offset_declared"] = -0.1
+    with patch.object(RasterProcessor, "read_window_band", _read_by_scene((2371.0, 851.0), (2787.0, 1550.0))):
+        metrics = processor.analyze_change("C1", [80.245, 13.045, 80.255, 13.055], before, after)
+    # Median values measured from live scenes, which give plausible NDVI only without an offset.
+    assert metrics["mean_ndvi_before"] == pytest.approx(0.4717, abs=0.001)
+    assert metrics["mean_ndvi_after"] == pytest.approx(0.2852, abs=0.001)
+
+
 def test_08b_missing_swir_reports_bsi_as_absent_not_zero(production):
     processor = RasterProcessor(output_dir=production)
     before = scene_fixture("S2_BEFORE", "2024-01-05")

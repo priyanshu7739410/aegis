@@ -111,6 +111,7 @@ def test_azure_failure_produces_vision_not_executed_without_gemini_fallback(azur
     with (
         patch(f"{CLIENT}.AzureChatOpenAI", azure_class),
         patch(f"{CLIENT}.ChatGoogleGenerativeAI") as gemini_class,
+        patch(f"{CLIENT}.asyncio.sleep", AsyncMock()),
     ):
         out = asyncio.run(
             GeminiVerificationClient().analyze_satellite_imagery(
@@ -118,8 +119,36 @@ def test_azure_failure_produces_vision_not_executed_without_gemini_fallback(azur
             )
         )
     gemini_class.assert_not_called()
+    assert structured.ainvoke.await_count == 4
     assert out.findings[0].status == "VISION_NOT_EXECUTED"
     assert out.vision_audit.vision_actually_executed is False
+
+
+@pytest.mark.parametrize(
+    "first_error",
+    ["504 DEADLINE_EXCEEDED", "503 overloaded", "Request timed out.", "429 RESOURCE_EXHAUSTED"],
+)
+def test_temporary_failure_is_retried_and_recovers(azure, first_error):
+    output = ExtractedProjectInfo(project_name="Ring Road")
+    azure_class, structured = _mocked_azure_class(output)
+    structured.ainvoke = AsyncMock(side_effect=[RuntimeError(first_error), output])
+    with (
+        patch(f"{CLIENT}.AzureChatOpenAI", azure_class),
+        patch(f"{CLIENT}.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        result = asyncio.run(GeminiVerificationClient().extract_project_info("document"))
+    assert result.project_name == "Ring Road"
+    assert structured.ainvoke.await_count == 2
+    sleep.assert_awaited_once()
+
+
+def test_permanent_failure_is_not_retried(azure):
+    azure_class, structured = _mocked_azure_class(None)
+    structured.ainvoke = AsyncMock(side_effect=RuntimeError("401 invalid api key"))
+    with patch(f"{CLIENT}.AzureChatOpenAI", azure_class):
+        with pytest.raises(GeminiExtractionError, match="401"):
+            asyncio.run(GeminiVerificationClient().extract_project_info("document"))
+    assert structured.ainvoke.await_count == 1
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,10 @@
+import asyncio
+import io
 import logging
 from pathlib import Path
 from typing import Any
 import httpx
+from PIL import Image
 import pypdf
 from pypdf.errors import PyPdfError
 
@@ -10,10 +13,14 @@ from core.settings import settings
 logger = logging.getLogger(__name__)
 
 OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit for free tier OCR.space
+MAX_FILE_SIZE_BYTES = 1_500_000  # OCR.space free plan limit, enforced with HTTP 413
+TARGET_IMAGE_BYTES = 1_400_000
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 # Scanned PDFs often embed a few stray characters; those still need real OCR.
 MIN_EMBEDDED_TEXT_CHARS = 20
+OCR_ATTEMPTS = 3
+OCR_RETRY_DELAY_SECONDS = 2.0
+TEMPORARY_OCR_FAILURES = ("timed out", "failed to communicate", "http 5", "non-json")
 
 
 class OCRError(Exception):
@@ -24,7 +31,7 @@ class OCRError(Exception):
 class OCRClient:
     """Client for OCR.space, using embedded PDF text locally when it exists."""
 
-    def __init__(self, api_key: str | None = None, timeout: float = 30.0):
+    def __init__(self, api_key: str | None = None, timeout: float = 45.0):
         if api_key:
             self.api_key = api_key
         elif settings.OCR_API_KEY:
@@ -58,12 +65,22 @@ class OCRClient:
             raise OCRError(f"'{path.name}' needs OCR.space but OCR_API_KEY is not configured.")
 
         file_size = path.stat().st_size
-        if file_size > MAX_FILE_SIZE_BYTES:
+        if suffix == ".pdf" and file_size > MAX_FILE_SIZE_BYTES:
             raise OCRError(
-                f"File size ({file_size / (1024*1024):.2f}MB) exceeds OCR.space limit of 10MB."
+                f"'{path.name}' is {file_size / 1_000_000:.1f} MB and scanned, but the OCR.space "
+                "free plan accepts at most 1.5 MB. Upload a smaller PDF or a photo of the page."
             )
 
-        return await self._call_ocr_space(path)
+        for attempt in range(1, OCR_ATTEMPTS + 1):
+            try:
+                return await self._call_ocr_space(path)
+            except OCRError as e:
+                temporary = any(k in str(e).lower() for k in TEMPORARY_OCR_FAILURES)
+                if not temporary or attempt == OCR_ATTEMPTS:
+                    raise
+                logger.warning(f"OCR.space attempt {attempt}/{OCR_ATTEMPTS} failed: {e}")
+                await asyncio.sleep(OCR_RETRY_DELAY_SECONDS * attempt)
+        raise OCRError("OCR.space returned no result.")
 
     @staticmethod
     def _extract_pdf_text(path: Path) -> str:
@@ -79,10 +96,8 @@ class OCRClient:
     async def _call_ocr_space(self, path: Path) -> str:
         """Execute HTTP request to OCR.space API."""
         try:
-            with open(path, "rb") as f:
-                file_bytes = f.read()
-
-            files = {"file": (path.name, file_bytes)}
+            name, file_bytes = self._prepare_upload(path)
+            files = {"file": (name, file_bytes)}
             data = {
                 "language": "eng",
                 "isOverlayRequired": "false",
@@ -116,6 +131,24 @@ class OCRClient:
         except httpx.RequestError as e:
             logger.error(f"Network error communicating with OCR.space: {e}")
             raise OCRError(f"Failed to communicate with OCR service: {e}") from e
+
+    @staticmethod
+    def _prepare_upload(path: Path) -> tuple[str, bytes]:
+        """Shrink oversized images to fit the OCR.space limit, keeping text legible."""
+        content = path.read_bytes()
+        if path.suffix.lower() == ".pdf" or len(content) <= MAX_FILE_SIZE_BYTES:
+            return path.name, content
+
+        with Image.open(io.BytesIO(content)) as source:
+            image = source.convert("RGB")
+        while True:
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            if buffer.tell() <= TARGET_IMAGE_BYTES:
+                return f"{path.stem}.jpg", buffer.getvalue()
+            if min(image.size) < 500:
+                raise OCRError(f"'{path.name}' could not be reduced below the OCR.space size limit.")
+            image = image.resize((int(image.width * 0.8), int(image.height * 0.8)))
 
     def _parse_ocr_response(self, result: dict[str, Any]) -> str:
         """Parse structured OCR.space JSON response into concatenated text."""

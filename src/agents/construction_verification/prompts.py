@@ -2,11 +2,12 @@ DOCUMENT_EXTRACTION_SYSTEM_PROMPT = """You are a specialized construction docume
 Your task is to extract structured project data from OCR text of construction contracts, contractor progress claims, completion certificates, and verification requests.
 
 Extraction Rules:
-1. Extract project title, contractor, construction type (e.g., Road construction, Building construction, Bridge, Foundation, Clearing), and the claimed payment amount exactly as written. Leave any value that is not stated as null.
+1. Extract project title, contractor, construction type (e.g., Road construction, Building construction, Bridge, Foundation, Clearing), and the payment amount requested in this claim exactly as written. Use the net amount requested, not the total project expenditure. Leave any value that is not stated as null.
 2. Extract the physical location or coordinates if explicitly present. Never invent or hallucinate coordinates or addresses.
-3. Extract stated start date and completion/progress claim date, formatted YYYY-MM-DD. If dates are not explicitly present, leave them null.
+3. Extract stated start date and completion/progress claim date, formatted YYYY-MM-DD. If dates are not explicitly present, leave them null. The completion date is when the physical work finished, never the claim submission, invoice or signature date.
 4. CLAIMS STRICTNESS:
    - ONLY physical construction activities qualify as claims (e.g., earthwork, excavation, road construction, bituminous paving, culvert installation, concrete pouring, drainage improvement, embankment, structural erection, foundation piling, vegetation clearing).
+   - Return every physical work item in an itemized schedule or expenditure table as its own separate claim. Do not merge items into one summary claim.
    - Each claim must include its claimed completion status and any measurable quantity when stated.
    - NON-CONSTRUCTION ITEMS MUST NEVER BE ADDED TO CLAIMS:
      - Date periods or billing windows (e.g., 'Period 01 January 2022 - 31 August 2024')

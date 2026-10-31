@@ -134,6 +134,9 @@ class RasterProcessor:
                 f"Scene {scene.get('scene_id')} is missing required bands: {', '.join(missing)}"
             )
 
+        # Earth Search metadata declares a -0.1 offset, but live pixels sit well below the 1000
+        # it implies, so the stored values are already corrected. Applying it again crushes red
+        # to zero and inflates NDVI.
         bands = {
             band: self.read_window_band(assets[band], bbox_wgs84, grid=grid)[0]
             for band in ("red", "green", "blue", "nir")

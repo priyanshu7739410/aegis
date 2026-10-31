@@ -33,7 +33,7 @@ from agents.construction_verification.schemas import (
 
 logger = logging.getLogger(__name__)
 
-AZURE_TIMEOUT_SECONDS = 120.0
+MODEL_TIMEOUT_SECONDS = 120.0
 
 
 def encode_image_base64(image_path: str | Path) -> str:
@@ -54,6 +54,18 @@ def _is_rate_limit(e: Exception) -> bool:
             "rate limit",
             "too many requests",
             "exceeded your current quota",
+        ]
+    )
+
+
+def _is_retryable(e: Exception) -> bool:
+    """Rate limits and temporary server or network failures are worth another attempt."""
+    msg = str(e).lower()
+    return _is_rate_limit(e) or any(
+        k in msg
+        for k in [
+            "500", "502", "503", "504", "deadline_exceeded", "unavailable", "overloaded",
+            "timed out", "timeout", "connection error",
         ]
     )
 
@@ -130,9 +142,9 @@ class GeminiVerificationClient:
             try:
                 return llm.invoke(messages)
             except Exception as e:
-                if _is_rate_limit(e) and attempt < max_retries:
+                if _is_retryable(e) and attempt < max_retries:
                     logger.warning(
-                        f"Gemini API rate limit hit (attempt {attempt + 1}/{max_retries}). "
+                        f"Temporary model API failure (attempt {attempt + 1}/{max_retries}): {e}. "
                         f"Backing off for {delay:.1f}s..."
                     )
                     time.sleep(delay)
@@ -150,9 +162,9 @@ class GeminiVerificationClient:
             try:
                 return await llm.ainvoke(messages)
             except Exception as e:
-                if _is_rate_limit(e) and attempt < max_retries:
+                if _is_retryable(e) and attempt < max_retries:
                     logger.warning(
-                        f"Gemini API rate limit hit (attempt {attempt + 1}/{max_retries}). "
+                        f"Temporary model API failure (attempt {attempt + 1}/{max_retries}): {e}. "
                         f"Backing off for {delay:.1f}s..."
                     )
                     await asyncio.sleep(delay)
@@ -174,7 +186,7 @@ class GeminiVerificationClient:
                 azure_deployment=name,
                 api_key=self.api_key,
                 api_version=settings.CONSTRUCTION_AZURE_API_VERSION,
-                timeout=AZURE_TIMEOUT_SECONDS,
+                timeout=MODEL_TIMEOUT_SECONDS,
                 max_retries=0,
             )
             if structured_schema:
@@ -186,7 +198,7 @@ class GeminiVerificationClient:
             model=name,
             google_api_key=self.api_key,
             temperature=0.1,
-            timeout=45.0,
+            timeout=MODEL_TIMEOUT_SECONDS,
         )
         if structured_schema:
             return model.with_structured_output(structured_schema)

@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import re
+import threading
 import uuid
 from datetime import date, datetime, timezone
 from functools import lru_cache
@@ -54,6 +55,12 @@ _SCENE_KEYS = ("before_scene", "after_scene")
 _RASTER_KEYS = ("satellite_metrics", "satellite_error")
 _VISION_KEYS = ("vision_findings", "vision_audit")
 _REPORT_KEYS = ("verification_results", "overall_status", "requires_drone_verification", "report")
+
+
+# Model SDKs cache async HTTP clients bound to the loop that first used them, so stages must
+# share one long-lived loop. asyncio.run would close it under them between stages.
+_loop = asyncio.new_event_loop()
+threading.Thread(target=_loop.run_forever, daemon=True, name="construction-workflow").start()
 
 
 class DecisionError(ValueError):
@@ -196,7 +203,8 @@ def run_stage(case: dict[str, Any], stage: str, force: bool = False) -> list[str
     state.update(messages=[], errors=[])
 
     try:
-        result = asyncio.run(_compiled(_nodes_for(case, stage, force)).ainvoke(state))
+        graph = _compiled(_nodes_for(case, stage, force))
+        result = asyncio.run_coroutine_threadsafe(graph.ainvoke(state), _loop).result()
     except Exception as e:
         logger.exception("Stage %s failed for %s", stage, case["case_id"])
         case["stage_errors"][stage] = [f"{stage} failed: {e}"]

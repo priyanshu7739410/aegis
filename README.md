@@ -50,7 +50,7 @@ Dependencies must already be installed in `.venv`. Copy `.env.example` to `.env`
 ## Run
 
 ```powershell
-uv run streamlit run src/construction_app.py
+uv run --no-sync streamlit run src/construction_app.py
 ```
 
 This command makes real API calls with the credentials in `.env`.
@@ -72,26 +72,21 @@ uv run --offline --no-sync python tests/run_app_offline.py --server.port 8599
 
 ## Verification status
 
-**Verified with local mocks.** These paths ran with OCR.space, Gemini, STAC and raster reads replaced by fixtures:
+**Verified live on 31 October 2026.** Three uploads ran through the real app in a real browser, using OCR.space, Earth Search, Sentinel-2 imagery on AWS and Azure `gpt-4.1`:
 
-- OCR text reaching extraction, and extracted details reaching the review form.
-- Officer coordinate and date edits reaching the scene search, and stale results being invalidated.
-- Construction and serialization of the Gemini Vision request, including both image payloads.
-- Failure handling for OCR, Gemini, STAC and raster reads.
-- All five stages driven through the app with Streamlit's `AppTest`, new-case reset, and decision recording.
+- A runway claim photo, where visible site preparation and pavement work were `SUPPORTED`.
+- A road letter as a JPG and as a 2.8 MB PNG, which was shrunk automatically to fit the OCR.space limit. Neither produced a `SUPPORTED` finding.
 
-**Verified with deterministic unit tests.** These ran on synthetic arrays or local GeoTIFF files:
+**Verified with mocks or synthetic data only:**
 
-- NDVI and BSI formulas, vegetation loss and disturbed area, and cloud masking.
-- Warping rasters from two UTM zones onto one grid.
+- Failure handling for OCR, the model, STAC and raster reads.
+- Corrupt uploads, missing coordinates and invalid officer input.
+- Retries for temporary failures, and the Gemini provider path.
 
-**Not tested live during the rescue work.** No request was sent to any of these services:
+**Not tested live:**
 
-- Gemini extraction and Gemini Vision, including whether the configured model accepts the schema.
-- Azure extraction and vision, including whether a deployment supports images and tool calling.
-- OCR.space, Earth Search STAC, and Sentinel-2 imagery on AWS S3.
-
-An authorized user should run one known case through the app and check the results before relying on it.
+- Scanned PDFs through OCR.space, and the Gemini provider.
+- Accuracy across a meaningful set of sites. Three uploads of two documents show that the pipeline runs, not how often its findings are right.
 
 ## Sentinel-2 limitations
 
@@ -106,11 +101,14 @@ No code path turns an AI result into a payment. Each decision requires an office
 
 ## Known limitations
 
-- Sentinel-2 processing-baseline radiometric offsets are not corrected, so comparing scenes across baselines may bias BSI and NDVI values.
 - The search area is a fixed box of ±0.005° around one coordinate, not the true site boundary.
 - Disturbed area is spectral change at 10 m per pixel and is not a surveyed area.
 - A case is held in the browser session. Reports, decisions and uploads persist as files, but an in-progress case cannot be resumed.
-- OCR.space limits file size and, on the free tier, page count.
+- The OCR.space free plan accepts files up to 1.5 MB. Images are shrunk automatically, but larger scanned PDFs are rejected with a clear error.
+- OCR.space can time out intermittently. The app retries up to three times, then shows the error so the officer can try again.
+- The vision model is not deterministic. The same road claim returned `NOT_SUPPORTED` in one run and `INSUFFICIENT_EVIDENCE` in another, so treat findings as prompts for review.
+- Earth Search metadata declares a `-0.1` radiometric offset, but pixels in the four scenes checked were already corrected, so the app does not subtract it. Other scenes were not checked.
+- Small models can miss claims. In testing, `gpt-4.1-nano` merged an itemized schedule into one claim, while `gpt-4.1` returned all seven physical items, so use `gpt-4.1` or stronger.
 - `USE_FAKE_MODEL=true` still produces a report, which is clearly labelled `SYNTHETIC_TEST_DATA`.
 
 ## Other code in this repository

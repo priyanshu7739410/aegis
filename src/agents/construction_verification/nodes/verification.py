@@ -21,6 +21,11 @@ RESOLUTION_LIMITATION = (
     "quality, material thickness, or features narrower than a few pixels."
 )
 
+SITE_BOX_LIMITATION = (
+    "Analysis covers a box of about 1.1 km around the supplied coordinates, not the full site "
+    "boundary. Work outside that box was not assessed."
+)
+
 
 def _is_synthetic(metrics: dict[str, Any], *scenes: dict[str, Any]) -> bool:
     return bool(metrics.get("synthetic")) or any(
@@ -41,7 +46,7 @@ def _evidence_limitations(
     vision_executed: bool,
     synthetic: bool,
 ) -> list[str]:
-    limitations = [RESOLUTION_LIMITATION]
+    limitations = [RESOLUTION_LIMITATION, SITE_BOX_LIMITATION]
     if synthetic:
         limitations.insert(0, "SYNTHETIC TEST DATA: this report contains no genuine satellite evidence.")
     if state.get("satellite_error"):
