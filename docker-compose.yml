@@ -1,0 +1,44 @@
+services:
+  service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    container_name: forge-service
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - HOST=0.0.0.0
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - EARTH_SEARCH_URL=${EARTH_SEARCH_URL:-https://earth-search.aws.element84.com/v1}
+      - EARTH_SEARCH_COLLECTION=${EARTH_SEARCH_COLLECTION:-sentinel-2-l2a}
+      - USE_FAKE_MODEL=${USE_FAKE_MODEL:-false}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    container_name: forge-app
+    ports:
+      - "8501:8501"
+    environment:
+      - AGENT_URL=http://service:8080
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    depends_on:
+      service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+

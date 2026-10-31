@@ -115,6 +115,7 @@ def load_sample_demo_case():
     st.session_state.cv_ocr_status = "demo_loaded"
     st.session_state.cv_ocr_error = None
     st.session_state.cv_ocr_text = (
+        "[SYNTHETIC TEST DATA — NOT A REAL CONTRACTOR CLAIM]\n"
         "CONTRACT CLAIM & PROGRESS REPORT\n"
         "Project: NH-44 Highway Expansion & Interchange Site B\n"
         "Location: Latitude 12.9716, Longitude 77.5946 (Bangalore Rural Sector)\n"
@@ -572,7 +573,7 @@ async def render_construction_verification_ui(agent_client: AgentClient, voice: 
                     st.rerun()
 
             if st.session_state.cv_is_demo:
-                st.info("ℹ️ **Demo Mode**: NH-44 Highway Expansion test claim loaded. Uploading a document will overwrite this.")
+                st.warning("⚠️ **[SYNTHETIC TEST DATA — NOT A REAL CONTRACTOR CLAIM]**: NH-44 Highway Expansion test claim loaded. Uploading a document will overwrite this.")
 
             # Step 1: Upload File & OCR
             st.markdown("### 📄 Step 1: Upload File & OCR")

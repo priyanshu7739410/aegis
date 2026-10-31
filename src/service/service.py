@@ -478,19 +478,68 @@ async def threads(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Comprehensive health check endpoint for monitoring platform dependencies."""
+    components: dict[str, Any] = {}
+    overall_ok = True
 
-    health_status = {"status": "ok"}
+    # 1. Check STAC endpoint reachability (5s timeout)
+    stac_url = getattr(settings, "EARTH_SEARCH_URL", "https://earth-search.aws.element84.com/v1")
+    try:
+        import urllib.request
+        req = urllib.request.Request(stac_url, method="HEAD", headers={"User-Agent": "ForgeHealthCheck/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            components["stac_endpoint"] = {
+                "status": "connected" if resp.status in (200, 301, 302) else f"http_{resp.status}",
+                "url": stac_url,
+            }
+    except Exception:
+        try:
+            import urllib.request
+            req = urllib.request.Request(stac_url, headers={"User-Agent": "ForgeHealthCheck/1.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                components["stac_endpoint"] = {"status": "connected", "url": stac_url}
+        except Exception as e2:
+            logger.warning(f"STAC health check failed: {e2}")
+            components["stac_endpoint"] = {"status": "unreachable", "error": str(e2), "url": stac_url}
+            overall_ok = False
 
-    if settings.LANGFUSE_TRACING:
+    # 2. Check Gemini API key configuration
+    import os
+    gemini_key = (
+        getattr(settings, "GOOGLE_API_KEY", None)
+        or getattr(settings, "GEMINI_API_KEY", None)
+        or os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
+    if gemini_key:
+        components["gemini_api"] = {
+            "status": "configured",
+            "key_present": True,
+            "model": getattr(settings, "GEMINI_VISION_MODEL", "gemini-2.5-flash"),
+        }
+    else:
+        components["gemini_api"] = {"status": "missing_key", "key_present": False}
+        overall_ok = False
+
+    # 3. Check OCR configuration
+    components["ocr"] = {
+        "status": "configured",
+        "engine": "gemini_multimodal_ocr",
+        "external_api_key_configured": bool(gemini_key or os.environ.get("OCR_API_KEY")),
+    }
+
+    # 4. Optional Langfuse check
+    if getattr(settings, "LANGFUSE_TRACING", False):
         try:
             langfuse = Langfuse()
-            health_status["langfuse"] = "connected" if langfuse.auth_check() else "disconnected"
-        except Exception as e:
-            logger.error(f"Langfuse connection error: {e}")
-            health_status["langfuse"] = "disconnected"
+            components["langfuse"] = "connected" if langfuse.auth_check() else "disconnected"
+        except Exception:
+            components["langfuse"] = "disconnected"
 
-    return health_status
+    return {
+        "status": "ok" if overall_ok else "degraded",
+        "components": components,
+    }
 
 
 app.include_router(router)
