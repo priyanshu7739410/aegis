@@ -21,6 +21,9 @@ RESOLUTION_LIMITATION = (
     "quality, material thickness, or features narrower than a few pixels."
 )
 
+# The measured fraction of the analysis box that lost vegetation. A narrow road can fall below
+# this, so low values make a positive unconfirmed rather than contradicted.
+MIN_CORROBORATING_LOSS_FRACTION = 0.05
 SITE_BOX_LIMITATION = (
     "Analysis covers a box of about 1.1 km around the supplied coordinates, not the full site "
     "boundary. Work outside that box was not assessed."
@@ -30,6 +33,18 @@ SITE_BOX_LIMITATION = (
 def _is_synthetic(metrics: dict[str, Any], *scenes: dict[str, Any]) -> bool:
     return bool(metrics.get("synthetic")) or any(
         scene.get("properties", {}).get("synthetic") for scene in scenes
+    )
+
+
+def _uncorroborated(metrics: dict[str, Any]) -> str | None:
+    """Explain why measurements do not back a positive model result, if they do not."""
+    loss = metrics.get("vegetation_loss_fraction")
+    if loss is None or loss >= MIN_CORROBORATING_LOSS_FRACTION:
+        return None
+    return (
+        f"Spectral measurements do not corroborate this: only {loss * 100:.1f}% of the analysed "
+        "area lost vegetation. Narrow work on already bare land can still fall below this level, "
+        "so an inspection is needed."
     )
 
 
@@ -121,6 +136,11 @@ async def verification_node(
                 VerificationStatus.NOT_SUPPORTED: "Ask the contractor to explain the contradiction and arrange an inspection.",
             }.get(status, "Satellite imagery is inconclusive. Arrange an on-site inspection.")
             action = finding.get("recommended_follow_up") or default_action
+            mismatch = _uncorroborated(metrics)
+            if status == VerificationStatus.SUPPORTED and mismatch:
+                status = VerificationStatus.INSUFFICIENT_EVIDENCE
+                limits = [*limits, mismatch]
+                action = "Arrange an on-site inspection."
             if status != VerificationStatus.SUPPORTED:
                 requires_drone = True
         else:
@@ -171,7 +191,15 @@ async def verification_node(
         }
 
     sat_metrics_obj = SatelliteMetrics(**metrics) if metrics else None
-    general_observations = (state.get("vision_findings") or {}).get("general_observations")
+    vision_state = state.get("vision_findings") or {}
+    general_observations = vision_state.get("general_observations")
+
+    visible_progress = vision_state.get("visible_progress") if vision_executed else None
+    progress_statement = vision_state.get("progress_statement") if vision_executed else None
+    mismatch = _uncorroborated(metrics)
+    if visible_progress == "VISIBLE_PROGRESS" and mismatch:
+        visible_progress = "UNCLEAR"
+        progress_statement = f"The vision model reported change, but it is unconfirmed. {mismatch}"
 
     audit_log = [f"Case {case_id} report generated at {datetime.now(timezone.utc).isoformat()}"]
     if metrics:
@@ -195,6 +223,8 @@ async def verification_node(
         after_scene=after_scene or None,
         vision_audit=vision_audit or None,
         general_observations=general_observations if vision_executed else None,
+        visible_progress=visible_progress,
+        progress_statement=progress_statement,
         evidence_limitations=_evidence_limitations(state, metrics, vision_executed, synthetic),
         location=location,
         start_date=start_date,

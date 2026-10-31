@@ -519,6 +519,8 @@ Return structured findings for every claim according to the system instructions.
                 for f in result.findings
             ],
             general_observations=result.general_observations,
+            visible_progress=result.visible_progress,
+            progress_statement=result.progress_statement,
         )
 
     def analyze_discovery_imagery(

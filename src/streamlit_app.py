@@ -17,7 +17,7 @@ from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage, UserThreads
 from schema.task_data import TaskData, TaskDataStatus
 from voice import VoiceManager
-from construction_ui import render_construction_verification_ui
+from construction_app import render_dashboard
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
 # The app has three main functions which are all run async:
@@ -298,7 +298,7 @@ async def main() -> None:
 
     # Draw existing messages
     if agent_client.agent == "construction-verification":
-        await render_construction_verification_ui(agent_client, voice=voice, enable_audio=enable_audio)
+        render_dashboard()
         return
 
     messages: list[ChatMessage] = st.session_state.messages

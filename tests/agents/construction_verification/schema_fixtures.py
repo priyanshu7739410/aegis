@@ -27,6 +27,8 @@ def scene_fixture(scene_id: str, acquisition_date: str) -> dict:
 
 def vision_response(claim: str, status: str) -> dict:
     return {
+        "visible_progress": "VISIBLE_PROGRESS",
+        "progress_statement": "fixture progress statement",
         "findings": [
             {
                 "claim": claim,

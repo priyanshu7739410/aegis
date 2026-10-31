@@ -600,6 +600,46 @@ def test_12_report_reflects_actual_findings(production):
     assert saved["overall_status"] == report["overall_status"]
 
 
+def test_12a_progress_statement_reaches_report_even_when_claims_are_inconclusive(production):
+    case = _with_scenes(_reviewed_case())
+    response = vision_response(CLAIM, "INSUFFICIENT_EVIDENCE")
+    with (
+        patch.object(RasterProcessor, "read_window_band", _read_by_scene((3000.0, 1000.0), (1500.0, 1500.0))),
+        patch.object(GeminiVerificationClient, "_ainvoke_with_fallback", AsyncMock(return_value=(response, "m"))),
+    ):
+        cw.run_stage(case, "analyze")
+    assert case["verification_results"][0]["status"] == "INSUFFICIENT_EVIDENCE"
+    assert case["report"]["visible_progress"] == "VISIBLE_PROGRESS"
+    assert case["report"]["progress_statement"] == "fixture progress statement"
+
+
+def test_12a1_positive_model_result_needs_spectral_corroboration(production):
+    case = _with_scenes(_reviewed_case())
+    response = vision_response(CLAIM, "SUPPORTED")
+    # Identical before and after values mean no vegetation was lost anywhere on site.
+    with (
+        patch.object(RasterProcessor, "read_window_band", _read_by_scene((3000.0, 1000.0), (3000.0, 1000.0))),
+        patch.object(GeminiVerificationClient, "_ainvoke_with_fallback", AsyncMock(return_value=(response, "m"))),
+    ):
+        cw.run_stage(case, "analyze")
+    result = case["verification_results"][0]
+    assert result["status"] == "INSUFFICIENT_EVIDENCE"
+    assert any("do not corroborate" in lim for lim in result["limitations"])
+    assert case["report"]["visible_progress"] == "UNCLEAR"
+    assert "unconfirmed" in case["report"]["progress_statement"]
+
+
+def test_12a2_failed_vision_reports_no_progress_statement(production):
+    case = _with_scenes(_reviewed_case())
+    with (
+        patch.object(RasterProcessor, "read_window_band", _read_by_scene((3000.0, 1000.0), (1500.0, 1500.0))),
+        patch.object(GeminiVerificationClient, "_ainvoke_with_fallback", AsyncMock(side_effect=RuntimeError("x"))),
+    ):
+        cw.run_stage(case, "analyze")
+    assert case["report"]["visible_progress"] is None
+    assert case["report"]["progress_statement"] is None
+
+
 def test_12b_no_claims_never_reports_supported(production):
     from agents.construction_verification.nodes.verification import verification_node
 

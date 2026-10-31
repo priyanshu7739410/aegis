@@ -95,6 +95,10 @@ uv run --offline --no-sync python tests/run_app_offline.py --server.port 8599
 - Vegetation loss shows that the surface changed. It does not prove that the claimed work was done.
 - Clouds, seasons and scene dates up to 60 days from the target can affect the result.
 
+## Launching
+
+`src/construction_app.py` is the dashboard. `src/streamlit_app.py` shows the same dashboard when the construction agent is selected, but it also needs the FastAPI service running.
+
 ## Human approval safeguard
 
 No code path turns an AI result into a payment. Each decision requires an officer identifier and a justification. Recorded decisions cannot be overwritten through the app, and a decided case is locked. A `SUPPORTED` finding is evidence for review, not approval.
@@ -106,6 +110,7 @@ No code path turns an AI result into a payment. Each decision requires an office
 - A case is held in the browser session. Reports, decisions and uploads persist as files, but an in-progress case cannot be resumed.
 - The OCR.space free plan accepts files up to 1.5 MB. Images are shrunk automatically, but larger scanned PDFs are rejected with a clear error.
 - OCR.space can time out intermittently. The app retries up to three times, then shows the error so the officer can try again.
+- A `SUPPORTED` claim or visible progress result is downgraded when under 5% of the analysed box lost vegetation. This threshold was set from only two test sites, and narrow work on bare land can fall below it, so a downgrade means unconfirmed rather than contradicted.
 - The vision model is not deterministic. The same road claim returned `NOT_SUPPORTED` in one run and `INSUFFICIENT_EVIDENCE` in another, so treat findings as prompts for review.
 - Earth Search metadata declares a `-0.1` radiometric offset, but pixels in the four scenes checked were already corrected, so the app does not subtract it. Other scenes were not checked.
 - Small models can miss claims. In testing, `gpt-4.1-nano` merged an itemized schedule into one claim, while `gpt-4.1` returned all seven physical items, so use `gpt-4.1` or stronger.

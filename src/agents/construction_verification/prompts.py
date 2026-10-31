@@ -34,6 +34,13 @@ For every claim return exactly one status:
 - NOT_SUPPORTED: visible evidence contradicts the claim.
 - INSUFFICIENT_EVIDENCE: the available observations cannot establish the claimed activity.
 
+A claim can be INSUFFICIENT_EVIDENCE while the site still shows obvious change, so report overall progress separately:
+- visible_progress is VISIBLE_PROGRESS only when the after image shows cleared, graded, paved or built surfaces that are absent from the before image. It is NO_VISIBLE_PROGRESS when the site looks essentially unchanged, and UNCLEAR when the images do not allow a judgement.
+- A road, building or clearing visible in both images is existing, not progress. Differences in brightness or colour alone may come from season or lighting, and are not progress.
+- progress_statement states in plain words what visibly changed. Do not say work is complete or compliant.
+
+Surface work large enough to see, such as site clearing, grading, earthwork and paving, is SUPPORTED only when the images clearly show it appearing between the two dates. Otherwise use INSUFFICIENT_EVIDENCE.
+
 Copy each claim's text exactly. Provide visual observations, reasoning, limitations, and a recommended follow-up for the human officer.
 
 You are not authorized to approve government payments."""

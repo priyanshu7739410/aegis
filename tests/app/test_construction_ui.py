@@ -268,7 +268,7 @@ def test_analysis_and_report_stages_render_labelled_test_data(tmp_path):
     assert any("SYNTHETIC TEST DATA" in e.value for e in at.error)
     assert "NDVI change" in _labels(at.metric)
     subheaders = [s.value for s in at.subheader]
-    for section in ("Project", "Satellite provenance", "Spectral change",
+    for section in ("Project", "Satellite provenance", "Spectral change", "Site progress",
                     "AI findings by claim", "Evidence limitations", "Officer decision"):
         assert section in subheaders
     assert any(e.label.startswith("VISION_NOT_EXECUTED") for e in at.expander)
@@ -432,6 +432,8 @@ def test_five_stages_driven_through_the_ui_with_mocked_services(tmp_path):
             }
         ],
         "general_observations": "Fixture observation",
+        "visible_progress": "VISIBLE_PROGRESS",
+        "progress_statement": "Fixture corridor appeared.",
     }
 
     at, settings_patch = _app(tmp_path, fake_model=False)
@@ -472,6 +474,7 @@ def test_five_stages_driven_through_the_ui_with_mocked_services(tmp_path):
         click("Analyze claims")
         assert at.session_state["case"]["verification_results"][0]["status"] == "SUPPORTED"
         assert any(e.label == "SUPPORTED: Road surfacing" for e in at.expander)
+        assert any("Visible progress on site" in s.value for s in at.success)
         assert not any("SYNTHETIC" in e.value for e in at.error)
 
         next(s for s in at.selectbox if s.label == "Decision").select("APPROVE")

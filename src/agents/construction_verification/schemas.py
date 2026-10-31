@@ -169,8 +169,16 @@ class ClaimVisionAssessment(BaseModel):
 
 
 class VisionModelResponse(BaseModel):
-    """Structured output schema sent to Gemini Vision."""
+    """Structured output schema sent to the vision model."""
 
+    visible_progress: Literal["VISIBLE_PROGRESS", "NO_VISIBLE_PROGRESS", "UNCLEAR"] = Field(
+        default="UNCLEAR",
+        description="Whether the site visibly changed in a way consistent with construction, regardless of whether any single claim can be proven.",
+    )
+    progress_statement: str = Field(
+        default="",
+        description="One or two plain sentences stating what visibly changed on site between the two dates.",
+    )
     findings: list[ClaimVisionAssessment] = Field(default_factory=list)
     general_observations: str = ""
 
@@ -184,6 +192,8 @@ class VisionAnalysisOutput(BaseModel):
         default="",
         description="General description of visible surface transformations on site."
     )
+    visible_progress: str | None = None
+    progress_statement: str | None = None
     vision_audit: "VisionExecutionAudit | None" = None
 
 
@@ -241,6 +251,8 @@ class VerificationReport(BaseModel):
     after_scene: dict[str, Any] | None = None
     vision_audit: dict[str, Any] | None = None
     general_observations: str | None = None
+    visible_progress: str | None = None
+    progress_statement: str | None = None
     evidence_limitations: list[str] = Field(default_factory=list)
     location: dict[str, Any]
     start_date: str | None = None

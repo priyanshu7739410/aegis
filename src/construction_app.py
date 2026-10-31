@@ -234,6 +234,19 @@ def _render_imagery(metrics: dict[str, Any], case: dict[str, Any]) -> None:
             column.warning(f"{caption}: image unavailable")
 
 
+def _render_progress(visible_progress: str | None, statement: str | None) -> None:
+    """Overall site change, shown apart from claim verdicts, which can stay inconclusive."""
+    if not visible_progress:
+        return
+    text = statement or "The model gave no description."
+    if visible_progress == "VISIBLE_PROGRESS":
+        st.success(f"**Visible progress on site.** {text}")
+    elif visible_progress == "NO_VISIBLE_PROGRESS":
+        st.error(f"**No visible progress on site.** {text}")
+    else:
+        st.info(f"**Site progress unclear.** {text}")
+
+
 def _render_analysis(case: dict[str, Any]) -> None:
     st.header("Analyze construction claims")
     if not stage_complete(case, "retrieve"):
@@ -260,6 +273,8 @@ def _render_analysis(case: dict[str, Any]) -> None:
         audit = case.get("vision_audit") or {}
         if not audit.get("vision_actually_executed"):
             st.error(f"VISION_NOT_EXECUTED: {audit.get('error_message') or 'The vision model did not run.'}")
+        report = case.get("report") or {}
+        _render_progress(report.get("visible_progress"), report.get("progress_statement"))
         st.dataframe(
             [
                 {"Claim": r["claim"], "Status": r["status"]}
@@ -316,6 +331,12 @@ def _render_report_body(case: dict[str, Any], report: dict[str, Any]) -> None:
         _render_imagery(metrics, case)
     else:
         st.warning("No spectral measurements are available for this report.")
+
+    st.subheader("Site progress")
+    if report.get("visible_progress"):
+        _render_progress(report["visible_progress"], report.get("progress_statement"))
+    else:
+        st.warning("No progress assessment is available because vision analysis did not run.")
 
     st.subheader("AI findings by claim")
     model_used = (report.get("vision_audit") or {}).get("model_used")
@@ -379,8 +400,7 @@ def _render_report(case: dict[str, Any]) -> None:
     _render_decision(case)
 
 
-def main() -> None:
-    st.set_page_config(page_title="Construction Claim Verification", page_icon=":material/satellite_alt:", layout="wide")
+def render_dashboard() -> None:
     st.session_state.setdefault("case", new_case())
     case = st.session_state.case
 
@@ -407,4 +427,10 @@ def main() -> None:
         _render_report(case)
 
 
-main()
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="Construction Claim Verification",
+        page_icon=":material/satellite_alt:",
+        layout="wide",
+    )
+    render_dashboard()

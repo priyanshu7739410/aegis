@@ -65,6 +65,8 @@ async def vision_analysis_node(
             "vision_findings": {
                 "findings": findings_dicts,
                 "general_observations": vision_output.general_observations,
+                "visible_progress": vision_output.visible_progress,
+                "progress_statement": vision_output.progress_statement,
             },
             "vision_audit": audit_dict,
             "messages": [AIMessage(content="\n".join(msg_lines))],
